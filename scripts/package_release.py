@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = {
     'build/binary/FolderFlow.exe': 'FolderFlow.exe',
     'README.md': 'README.md',
-    'README.en.md': 'README.en.md',
+    'README_CN.md': 'README_CN.md',
     'CONTRIBUTING.md': 'CONTRIBUTING.md',
     'SECURITY.md': 'SECURITY.md',
     'LICENSE': 'LICENSE',
