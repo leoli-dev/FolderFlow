@@ -13,6 +13,8 @@ Extract the release ZIP and run `FolderFlow.exe`. No installer or separate Pytho
 - Size/time change detection, SHA-256 verification, resumable copies and prefix validation.
 - Capacity preflight, configurable reserved space, include/exclude globs, retries and transfer limits.
 - Durable SQLite state, operation logs, file manifests and retained-version records.
+- Searchable 200-item manifest pages with pending/completed/failed/mirror filters.
+- Separate overall and current-file progress, verified bytes, item totals, errors and estimated remaining time.
 
 Source folders remain read-only. Versioned backup and one-way update preserve destination-only files.
 Mirror mode moves destination-only files into recoverable storage; source errors stop recycling.
@@ -41,7 +43,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
 This creates a local `.venv`, installs pinned build dependencies, runs the tests and produces:
 
 - `dist/FolderFlow/FolderFlow.exe`
-- `dist/FolderFlow-2.0.0-windows-x64-portable.zip`
+- `dist/FolderFlow-2.1.0-windows-x64-portable.zip`
 - `dist/SHA256SUMS.txt`
 
 The release is built from an explicit allowlist in a fresh staging directory.
@@ -70,6 +72,11 @@ Copies regular file content and directories; excludes ACLs, ownership, alternate
 Full verification is per-file, not an atomic snapshot. Stop writes or use native application exports for live databases.
 Destination-side permissions and encryption apply; FolderFlow does not provide its own encryption or key recovery.
 Retained versions and mirror recycling are not automatically purged. Paths are listed in `retained-versions.csv`.
+
+Overall progress includes already-verified files in the selected scope. Copies and two hash passes
+contribute partial progress; only verified publication counts as a completed file. Failed/paused runs
+do not show successful 100%. Empty files use item counts; remaining time is an estimate.
+Pause and close a running older build before upgrading; keep `data/` to resume.
 
 MIT applies to application source. Bundled runtime components retain their own licenses:
 [LICENSE](LICENSE), [third-party notices](THIRD_PARTY_NOTICES.md).

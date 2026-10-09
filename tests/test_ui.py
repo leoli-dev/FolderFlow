@@ -47,6 +47,17 @@ class TaskUiTests(unittest.TestCase):
         self.root.update()
         self.assertFalse(self.view.busy)
 
+    def wait_inventory(self):
+        deadline=time.monotonic()+10
+        self.view.request_inventory()
+        while time.monotonic()<deadline:
+            self.root.update()
+            time.sleep(.02)
+            if self.view.query_applied == self.view.query_generation and not self.view.query_pending and self.view.query_thread and not self.view.query_thread.is_alive():
+                self.root.update()
+                return
+        self.fail('inventory read did not finish')
+
     def test_fresh_install_has_no_personal_nas_defaults_and_no_autorun(self):
         self.assertEqual(self.view.config['shares'],{})
         self.assertFalse(self.view.busy)
@@ -113,6 +124,25 @@ class TaskUiTests(unittest.TestCase):
         self.assertEqual(migrated['shares']['legacy']['target'],str(self.target))
         self.assertEqual(migrated['shares']['legacy']['layout'],'managed')
         self.assertEqual(migrated['shares']['legacy']['mode'],'backup')
+
+    def test_analysis_shows_file_queue_and_run_has_distinct_overall_bar(self):
+        a=self.view.save_task(self.payload())
+        self.view.rebuild_rows(a)
+        self.view.run('scan')
+        self.wait_idle()
+        self.wait_inventory()
+        rows=self.view.file_table.get_children()
+        self.assertEqual(len(rows),1)
+        self.assertEqual(self.view.file_table.set(rows[0],'action'),'新增')
+        self.assertEqual(float(self.view.overall_bar['value']),0)
+        self.assertIsNot(self.view.overall_bar,self.view.progress)
+        self.view.run('backup')
+        self.wait_idle()
+        self.assertEqual(float(self.view.overall_bar['value']),100)
+        self.assertIn('完成 1 / 1',self.view.overall_text.get())
+        self.view.file_filter.set('已完成')
+        self.wait_inventory()
+        self.assertEqual(len(self.view.file_table.get_children()),1)
 
 
 if __name__=='__main__':

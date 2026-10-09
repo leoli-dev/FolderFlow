@@ -15,6 +15,7 @@ from tkinter import ttk, filedialog, messagebox
 
 from .engine import Engine, Stopped, is_link, safe_path
 from . import __version__
+from .inventory import load_page
 
 BASE = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[2]
 STATE = BASE / 'data'
@@ -92,10 +93,24 @@ class App:
         self.latest = {}
         self.active_ids = []
         self.last_progress = 0
+        self.last_overall = None
+        self.overall_active = False
+        self.operation = None
+        self.current_file_value = None
+        self.query_generation = 0
+        self.query_applied = -1
+        self.query_pending = None
+        self.query_thread = None
+        self.view_closing = False
+        self.file_page = 1
+        self.file_pages = 1
+        self.last_view_refresh = 0
         self.scale = max(1, float(root.tk.call('tk', 'scaling')) / (96 / 72))
         width = min(round(1320 * self.scale), round(root.winfo_screenwidth() * .94))
         height = min(round(900 * self.scale), round(root.winfo_screenheight() * .92))
         self.wrap = width - 44
+        self.compact = height/self.scale < 850
+        self.tasks_expanded = not self.compact
         root.title(f'FolderFlow {__version__}  •  Backup & Sync')
         root.geometry(f'{width}x{height}+30+30')
         root.minsize(min(width, round(1050*self.scale)), min(height, round(700*self.scale)))
@@ -105,7 +120,9 @@ class App:
         self.build()
         self.refresh_saved()
         self.save_config()
-        root.after(120, self.poll)
+        self.request_inventory()
+        root.bind('<Destroy>',self.on_destroy,add='+')
+        self.poll_id = root.after(120, self.poll)
 
     def style(self):
         style = ttk.Style()
@@ -120,8 +137,21 @@ class App:
         style.configure('TProgressbar', background='#1768d5', troughcolor='#dde4ee', borderwidth=0)
 
     def build(self):
-        main = ttk.Frame(self.root, padding=20)
-        main.pack(fill='both', expand=True)
+        if self.compact:
+            shell = ttk.Frame(self.root)
+            shell.pack(fill='both',expand=True)
+            canvas = tk.Canvas(shell,highlightthickness=0,bg='#f3f5f8')
+            outer_scroll = ttk.Scrollbar(shell,orient='vertical',command=canvas.yview)
+            outer_scroll.pack(side='right',fill='y')
+            canvas.pack(side='left',fill='both',expand=True)
+            canvas.configure(yscrollcommand=outer_scroll.set)
+            main = ttk.Frame(canvas,padding=20)
+            window = canvas.create_window(0,0,window=main,anchor='nw')
+            canvas.bind('<Configure>',lambda e:canvas.itemconfigure(window,width=e.width))
+            main.bind('<Configure>',lambda e:canvas.configure(scrollregion=canvas.bbox('all')))
+        else:
+            main = ttk.Frame(self.root, padding=20)
+            main.pack(fill='both', expand=True)
         header = ttk.Frame(main)
         header.pack(fill='x')
         ttk.Label(header, text='FolderFlow', font=('Segoe UI', 27, 'bold')).pack(side='left')
@@ -140,13 +170,17 @@ class App:
         self.toggle_button.pack(side='left', padx=8)
         self.remove_button = ttk.Button(bar, text='移除任务', command=self.remove_tasks)
         self.remove_button.pack(side='left')
+        self.tasks_toggle = ttk.Button(bar,text='收起任务列表' if self.tasks_expanded else '展开任务列表',command=self.toggle_task_table)
+        self.tasks_toggle.pack(side='left',padx=8)
         ttk.Button(bar, text='使用说明', command=lambda: os.startfile(guide_path())).pack(side='right')
         frame = ttk.Frame(main)
-        frame.pack(fill='x')
+        self.tasks_frame = frame
+        if self.tasks_expanded:
+            frame.pack(fill='x')
         columns = ('enabled', 'name', 'mode', 'source', 'target', 'files', 'size', 'verified', 'status')
-        self.table = ttk.Treeview(frame, columns=columns, show='headings', height=8, selectmode='extended')
+        self.table = ttk.Treeview(frame, columns=columns, show='headings', height=max(1,min(4,len(self.config['shares']))), selectmode='extended')
         titles = ['启用', '任务', '模式', '来源', '目标', '文件数', '容量', '已验证', '状态']
-        widths = [48, 135, 100, 260, 260, 90, 110, 100, 120]
+        widths = [48, 135, 100, 260, 260, 90, 110, 140, 120]
         for col, title, width in zip(columns, titles, widths):
             self.table.heading(col, text=title)
             self.table.column(col, width=round(width*self.scale), minwidth=45,
@@ -159,13 +193,15 @@ class App:
         self.table.bind('<Control-a>', lambda e: (self.table.selection_set(self.table.get_children()), 'break')[1])
         self.table.bind('<<TreeviewSelect>>', lambda e: self.show_details())
         self.details = tk.StringVar(value='点击新建任务，选择来源和目标。本机目录、移动硬盘、映射盘及 SMB 网络共享均可使用。')
-        ttk.Label(main, textvariable=self.details, wraplength=self.wrap, foreground='#53647a').pack(anchor='w', pady=(10, 12))
+        self.details_label = ttk.Label(main, textvariable=self.details, wraplength=self.wrap, foreground='#53647a')
+        self.details_label.pack(anchor='w', pady=(10, 12))
         actions = ttk.Frame(main)
         actions.pack(fill='x')
         ttk.Label(actions, text='范围').pack(side='left', padx=(0, 7))
         self.scope = tk.StringVar(value='选中任务')
         self.scope_box = ttk.Combobox(actions, textvariable=self.scope, values=['选中任务', '所有启用任务'], state='readonly', width=13)
         self.scope_box.pack(side='left', padx=(0, 10))
+        self.scope_box.bind('<<ComboboxSelected>>',lambda e:self.request_inventory(reset=True,scope_change=True))
         self.scan_button = ttk.Button(actions, text='分析 / 扫描', command=lambda: self.run('scan'))
         self.scan_button.pack(side='left')
         self.start_button = ttk.Button(actions, text='执行 / 继续', style='Primary.TButton', command=lambda: self.run('backup'))
@@ -180,14 +216,66 @@ class App:
         ttk.Label(main, textvariable=self.plan_text, wraplength=self.wrap).pack(anchor='w', pady=(12, 10))
         self.status = tk.StringVar(value='就绪 · 选择任务，点击分析。')
         ttk.Label(main, textvariable=self.status, font=('Microsoft YaHei UI', 12, 'bold'), wraplength=self.wrap).pack(anchor='w')
+        self.overall_text = tk.StringVar(value='总体进度 · 选择任务并分析清单')
+        ttk.Label(main,textvariable=self.overall_text,wraplength=self.wrap,
+            font=('Microsoft YaHei UI',11,'bold')).pack(anchor='w',pady=(8,4))
+        self.overall_bar = ttk.Progressbar(main,maximum=100)
+        self.overall_bar.pack(fill='x',pady=(0,6))
         self.file_text = tk.StringVar(value='等待操作')
         ttk.Label(main, textvariable=self.file_text, wraplength=self.wrap).pack(anchor='w', pady=(5, 6))
         self.progress = ttk.Progressbar(main, maximum=100)
         self.progress.pack(fill='x')
         self.metric = tk.StringVar(value='文件级进度 · SHA-256 完整验证 · 安全发布副本')
         ttk.Label(main, textvariable=self.metric, foreground='#53647a').pack(anchor='w', pady=(5, 10))
-        logframe = ttk.Frame(main)
-        logframe.pack(fill='both', expand=True)
+        notebook = ttk.Notebook(main)
+        notebook.pack(fill='both',expand=True,pady=(3,0))
+        fileframe = ttk.Frame(notebook,padding=8)
+        logframe = ttk.Frame(notebook)
+        notebook.add(fileframe,text='文件清单')
+        notebook.add(logframe,text='操作日志')
+        filters = ttk.Frame(fileframe)
+        filters.pack(fill='x',pady=(0,6))
+        self.file_filter = tk.StringVar(value='待同步')
+        self.file_filter_box = ttk.Combobox(filters,textvariable=self.file_filter,
+            values=['待同步','全部文件','已完成','失败','镜像回收'],state='readonly',width=12)
+        self.file_filter_box.pack(side='left')
+        self.file_filter_box.bind('<<ComboboxSelected>>',lambda e:self.request_inventory(reset=True))
+        self.file_search = tk.StringVar()
+        entry = ttk.Entry(filters,textvariable=self.file_search,width=36)
+        entry.pack(side='left',padx=8)
+        entry.bind('<Return>',lambda e:self.request_inventory(reset=True))
+        ttk.Button(filters,text='搜索路径',command=lambda:self.request_inventory(reset=True)).pack(side='left')
+        ttk.Button(filters,text='刷新',command=self.request_inventory).pack(side='left',padx=8)
+        self.inventory_text = tk.StringVar(value='清单尚未加载')
+        ttk.Label(filters,textvariable=self.inventory_text).pack(side='right')
+        grid = ttk.Frame(fileframe)
+        grid.pack(fill='both',expand=True)
+        cols = ('task','path','size','action','state','error')
+        self.file_table = ttk.Treeview(grid,columns=cols,show='headings',height=3,selectmode='browse')
+        for col,title,width in zip(cols,['任务','相对路径 / 文件','大小','操作','状态','问题说明'],[125,560,110,100,110,270]):
+            self.file_table.heading(col,text=title)
+            self.file_table.column(col,width=round(width*self.scale),minwidth=70,
+                stretch=col in ('path','error'),anchor='w')
+        self.file_table.grid(row=0,column=0,sticky='nsew')
+        scroll = ttk.Scrollbar(grid,orient='vertical',command=self.file_table.yview)
+        scroll.grid(row=0,column=1,sticky='ns')
+        horizontal = ttk.Scrollbar(grid,orient='horizontal',command=self.file_table.xview)
+        horizontal.grid(row=1,column=0,sticky='ew')
+        self.file_table.configure(yscrollcommand=scroll.set,xscrollcommand=horizontal.set)
+        grid.columnconfigure(0,weight=1)
+        grid.rowconfigure(0,weight=1)
+        self.file_table.tag_configure('error',foreground='#b42318')
+        self.file_table.tag_configure('current',background='#e4efff')
+        paging = ttk.Frame(fileframe)
+        paging.pack(fill='x',pady=(5,0))
+        ttk.Button(paging,text='上一页',command=lambda:self.change_page(-1)).pack(side='left')
+        self.page_text = tk.StringVar(value='第 1 / 1 页 · 每页 200 项')
+        ttk.Label(paging,textvariable=self.page_text).pack(side='left',padx=10)
+        ttk.Button(paging,text='下一页',command=lambda:self.change_page(1)).pack(side='left')
+        ttk.Label(paging,text='转到页').pack(side='left',padx=(16,5))
+        self.page_input = tk.StringVar(value='1')
+        ttk.Entry(paging,textvariable=self.page_input,width=7).pack(side='left')
+        ttk.Button(paging,text='跳转',command=self.jump_page).pack(side='left',padx=8)
         self.logbox = tk.Text(logframe, height=7, bg='#172336', fg='#d9e6f6', relief='flat', wrap='word',
             font=('Microsoft YaHei UI', 9), padx=12, pady=8, state='disabled')
         self.logbox.pack(side='left', fill='both', expand=True)
@@ -219,6 +307,7 @@ class App:
 
     def rebuild_rows(self, selected=None):
         self.table.delete(*self.table.get_children())
+        self.table.configure(height=max(1,min(4,len(self.config['shares']))))
         for key, entry in self.config['shares'].items():
             self.table.insert('', 'end', iid=key, values=('✓' if entry.get('enabled', True) else '—',
                 entry.get('label', key), MODES.get(entry.get('mode', 'backup'), '版本备份'),
@@ -226,7 +315,16 @@ class App:
         if selected and self.table.exists(selected):
             self.table.selection_set(selected)
         elif self.config['shares']:
-            self.table.selection_set(next(iter(self.config['shares'])))
+            ready = next((key for key,entry in self.config['shares'].items() if entry.get('target') and entry.get('enabled',True)),None)
+            self.table.selection_set(ready or next(iter(self.config['shares'])))
+
+    def toggle_task_table(self):
+        self.tasks_expanded = not self.tasks_expanded
+        if self.tasks_expanded:
+            self.tasks_frame.pack(fill='x',before=self.details_label)
+        else:
+            self.tasks_frame.pack_forget()
+        self.tasks_toggle.configure(text='收起任务列表' if self.tasks_expanded else '展开任务列表')
 
     def refresh_saved(self):
         engine = Engine(STATE, self.config)
@@ -250,13 +348,132 @@ class App:
         keys = self.selected()
         if len(keys) == 1:
             entry = self.config['shares'][keys[0]]
-            text = MODE_HELP.get(entry.get('mode','backup'), '')
+            text = entry.get('label',keys[0])+' · '+MODE_HELP.get(entry.get('mode','backup'), '')
             if entry.get('layout') == 'managed':
                 text += '  此历史任务的副本位于目标的 files 子目录。'
             text += f'  保留空间：{entry.get("reserve_gib", 1)} GiB。'
             self.details.set(text)
         elif keys:
             self.details.set(f'已选中 {len(keys)} 个任务，可统一分析、执行或完整校验。')
+        if hasattr(self,'file_table'):
+            self.request_inventory(reset=True,scope_change=not self.busy)
+
+    def inventory_ids(self):
+        return self.active_ids if self.busy else self.run_ids()
+
+    def request_inventory(self, reset=False, scope_change=False):
+        if self.view_closing:
+            return
+        if reset:
+            self.file_page = 1
+        if scope_change and not self.busy:
+            self.last_overall = None
+            self.operation = None
+        self.query_generation += 1
+        config = json.loads(json.dumps(self.config))
+        states = {'待同步':'pending','全部文件':'all','已完成':'done','失败':'error','镜像回收':'recycle'}
+        self.query_pending = (self.query_generation,config,list(self.inventory_ids()),
+            states[self.file_filter.get()],self.file_search.get(),self.file_page,
+            'audit' if self.operation == 'audit' else 'backup')
+        self.last_view_refresh = time.monotonic()
+        self.start_query_worker()
+
+    def start_query_worker(self):
+        if not self.query_pending or self.view_closing or (self.query_thread and self.query_thread.is_alive()):
+            return
+        def query():
+            while not self.view_closing:
+                job = self.query_pending
+                self.query_pending = None
+                if not job:
+                    break
+                generation,config,keys,state,search,page,mode = job
+                try:
+                    result = load_page(STATE/'manifest.sqlite',config,keys,state,search,page,
+                        cancelled=lambda:generation != self.query_generation or self.view_closing,mode=mode)
+                    if generation == self.query_generation:
+                        self.events.put(('inventory',(generation,result)))
+                except Exception as e:
+                    if generation == self.query_generation and not self.view_closing:
+                        self.events.put(('inventory_error',str(e)))
+        self.query_thread = threading.Thread(target=query,daemon=True)
+        self.query_thread.start()
+
+    def on_destroy(self,event):
+        if event.widget == self.root:
+            self.view_closing = True
+            if getattr(self,'poll_id',None):
+                try:
+                    self.root.after_cancel(self.poll_id)
+                except tk.TclError:
+                    pass
+                self.poll_id = None
+            self.query_generation += 1
+            self.query_pending = None
+            if self.query_thread and self.query_thread.is_alive():
+                self.query_thread.join(timeout=2)
+
+    def change_page(self,delta):
+        self.file_page = min(self.file_pages,max(1,self.file_page+delta))
+        self.request_inventory()
+
+    def jump_page(self):
+        try:
+            self.file_page = min(self.file_pages,max(1,int(self.page_input.get())))
+        except ValueError:
+            return
+        self.request_inventory()
+
+    def paint_inventory(self,result):
+        selected = self.file_table.selection()
+        self.file_table.delete(*self.file_table.get_children())
+        actions = {'new':'新增','update':'更新','skip':'无需复制','recycle':'回收','unreadable':'无法读取','unknown':'待分析'}
+        states = {'pending':'待同步','done':'已完成','error':'失败','copying':'待继续','verifying':'待继续'}
+        for row in result['rows']:
+            current = self.busy and self.current_file_value and row['uid'] == 'file:'+str(self.current_file_value.get('id'))
+            state = ('校验中' if '校验' in self.current_file_value['phase'] else '复制中') if current else states.get(row['state'],'待同步')
+            label = self.config['shares'].get(row['task'],{}).get('label',row['task'] or '清单问题')
+            self.file_table.insert('', 'end',iid=row['uid'],values=(label,row['rel'] or '(清单范围)',
+                human(row['size']) if row['size'] is not None else '—',actions.get(row['action'],'待分析'),state,row['error']),
+                tags=('current',) if current else ('error',) if row['state']=='error' else ())
+        if selected and self.file_table.exists(selected[0]):
+            self.file_table.selection_set(selected[0])
+        self.file_page,self.file_pages = result['page'],result['pages']
+        self.page_input.set(str(self.file_page))
+        self.page_text.set(f'第 {self.file_page:,} / {self.file_pages:,} 页 · 每页 200 项 · 匹配 {result["count"]:,} 项')
+        metrics = result['metrics']
+        empty = ' · 当前筛选无记录' if not result['count'] else ''
+        self.inventory_text.set(f'已知文件 {metrics["total_files"]:,} 项 · 已完成 {metrics["completed_files"]:,} · 问题 {max(metrics["failed_files"],metrics["issues"]):,}{empty}')
+        if not self.busy and self.last_overall is None:
+            self.overall_bar.stop()
+            self.overall_bar.configure(mode='determinate')
+            if not metrics['ready']:
+                self.overall_bar['value'] = 0
+                self.overall_text.set('总体进度 · 请先设置目标并分析完整清单；当前文件数量可能不完整。')
+            else:
+                total = metrics['total_bytes']
+                percent = (100*metrics['completed_bytes']/total if total else
+                    100*metrics['completed_files']/max(1,metrics['total_files']))
+                if metrics['completed_files'] != metrics['total_files'] or metrics['issues']:
+                    percent = min(99.9,percent)
+                self.show_overall(dict(metrics,percent=percent,state='preview',eta_seconds=None,phase='清单'))
+
+    def show_overall(self,value):
+        self.overall_bar.stop()
+        self.overall_bar.configure(mode='determinate')
+        self.overall_bar['value'] = value['percent']
+        eta = value.get('eta_seconds')
+        eta_text = ''
+        if eta is not None:
+            minutes = max(1,round(eta/60))
+            eta_text = f' · 预计剩余 {minutes//60} 小时 {minutes%60} 分' if minutes >= 60 else f' · 预计剩余 {minutes} 分'
+        failures = max(value.get('failed_files',0),value.get('issues',0))
+        keys = self.active_ids if self.last_overall is not None else self.inventory_ids()
+        names = [self.config['shares'][key].get('label',key) for key in keys if key in self.config['shares']]
+        scope = '、'.join(names[:2])+(' 等' if len(names)>2 else '')
+        self.overall_text.set(f'总体 {value["percent"]:.1f}%（{scope}） · 完成 {value["completed_files"]:,} / {value["total_files"]:,} 项'
+            f' · 已验证 {human(value["completed_bytes"])} / {human(value["total_bytes"])} · 失败 {failures}'
+            f' · {value["phase"]}{eta_text}')
 
     def edit_task(self):
         key = self.one_selected()
@@ -454,6 +671,10 @@ class App:
                 messagebox.showinfo('选择目标', '请编辑这些任务并选择目标：\n'+'、'.join(missing))
                 return
         self.active_ids = keys
+        self.operation = operation
+        self.last_overall = None
+        self.overall_active = False
+        self.current_file_value = None
         config = {'version':2, 'shares': {key:json.loads(json.dumps(self.config['shares'][key])) for key in keys}}
         self.stop = threading.Event()
         self.busy = True
@@ -463,6 +684,10 @@ class App:
         self.pause_button.configure(state='normal')
         self.status.set({'scan':'分析变化与空间需求…','backup':'执行任务…','audit':'完整读取来源与目标，进行校验…'}[operation])
         self.progress['value'] = 0
+        self.overall_bar.configure(mode='indeterminate')
+        self.overall_bar.start(40)
+        self.overall_text.set('总体进度 · 正在扫描并建立执行清单，暂无法计算百分比。')
+        self.request_inventory(reset=True)
         def work():
             engine = None
             try:
@@ -477,7 +702,6 @@ class App:
                 elif operation == 'backup':
                     engine.scan()
                     engine.backup()
-                    self.event('capacity',engine.capacity())
                     failed = engine.active_issues()
                     self.event('done',f'本轮执行结束 · {failed} 个问题，请查看报告。' if failed else '执行完成 · 可运行完整校验，或打开目标查看副本。')
                 else:
@@ -540,6 +764,17 @@ class App:
                     self.update_summary(value)
                 elif kind == 'capacity':
                     self.show_plan(value)
+                    self.request_inventory(reset=True)
+                elif kind == 'overall':
+                    first = not self.overall_active
+                    self.overall_active = True
+                    self.last_overall = value
+                    self.show_overall(value)
+                    if first:
+                        self.request_inventory(reset=True)
+                elif kind == 'planning':
+                    label = self.config['shares'][value['share']].get('label',value['share'])
+                    self.file_text.set(f'建立执行清单 · {label} / {value["files"]:,} 项')
                 elif kind == 'scan':
                     key = value['share']
                     label = self.config['shares'][key].get('label',key)
@@ -549,12 +784,33 @@ class App:
                         self.table.set(key,'size',human(value['share_bytes']))
                         self.table.set(key,'status','分析中')
                 elif kind == 'file':
+                    previous = self.current_file_value
+                    self.current_file_value = value
+                    if previous and previous.get('id') != value.get('id'):
+                        old = 'file:'+str(previous.get('id'))
+                        if self.file_table.exists(old):
+                            self.file_table.item(old,tags=())
+                    uid = 'file:'+str(value.get('id'))
+                    if self.file_table.exists(uid):
+                        self.file_table.set(uid,'state','校验中' if '校验' in value['phase'] else '复制中')
+                        self.file_table.item(uid,tags=('current',))
                     label = self.config['shares'][value['share']].get('label',value['share'])
                     self.file_text.set(f'{value["phase"]} · {label} / {value["rel"]}')
                     percent = 100*value['done']/max(1,value['size'])
                     self.progress['value'] = percent
                     speed = f' · {human(value["speed"])}/s' if value.get('speed') else ''
-                    self.metric.set(f'{human(value["done"])} / {human(value["size"])} · {percent:.1f}%{speed}')
+                    self.metric.set(f'当前文件 {human(value["done"])} / {human(value["size"])} · {percent:.1f}%{speed}')
+                elif kind in ('complete_file','file_failed','recycled_file'):
+                    uid = ('mirror:' if kind=='recycled_file' else 'file:')+str(value['id'])
+                    if self.file_table.exists(uid):
+                        self.file_table.set(uid,'state','失败' if kind=='file_failed' else '已完成')
+                        self.file_table.item(uid,tags=('error',) if kind=='file_failed' else ())
+                        if kind=='file_failed':
+                            self.file_table.set(uid,'error',value['error'])
+                    self.current_file_value = None
+                    if kind=='complete_file':
+                        self.progress['value'] = 100
+                        self.metric.set(f'当前文件已复制并校验 · {human(value["bytes"])}')
                 elif kind in ('done','error'):
                     self.status.set(value if kind=='done' else '操作停止：'+value)
                     self.add_log(value)
@@ -565,12 +821,29 @@ class App:
                         button.configure(state='normal')
                     self.scope_box.configure(state='readonly')
                     self.pause_button.configure(state='disabled')
+                    self.overall_bar.stop()
+                    self.overall_bar.configure(mode='determinate')
+                    if self.last_overall is not None:
+                        self.show_overall(self.last_overall)
+                    self.current_file_value = None
+                    self.request_inventory()
                     if self.pending_close:
                         self.root.destroy()
                         return
+                elif kind == 'inventory':
+                    generation,result = value
+                    if generation == self.query_generation:
+                        self.paint_inventory(result)
+                        self.query_applied = generation
+                elif kind == 'inventory_error':
+                    self.inventory_text.set('清单读取失败：'+value)
         except queue.Empty:
             pass
-        self.root.after(120,self.poll)
+        reading = self.query_pending or (self.query_thread and self.query_thread.is_alive())
+        if self.busy and not reading and time.monotonic()-self.last_view_refresh >= 2:
+            self.request_inventory()
+        self.start_query_worker()
+        self.poll_id = self.root.after(120,self.poll)
 
     def open_target(self):
         key = self.one_selected()

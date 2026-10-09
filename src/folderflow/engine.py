@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from .progress import OverallProgress
 
 GIB = 1024 ** 3
 BLOCK = 4 * 1024 ** 2
@@ -99,6 +100,10 @@ class Engine:
         self.stop = threading.Event()
         self.retry_seconds = 10
         self.retry_limit = 30
+        self.overall = None
+        self.current_file = None
+        self.last_overall = 0
+        self.last_phase = ''
         self.db = sqlite3.connect(self.state / 'manifest.sqlite', timeout=30)
         self.db.row_factory = sqlite3.Row
         self.db.executescript('''
@@ -115,11 +120,20 @@ class Engine:
             CREATE TABLE IF NOT EXISTS issues (phase TEXT, share TEXT, rel TEXT, detail TEXT);
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE IF NOT EXISTS versions (share TEXT, rel TEXT, path TEXT, created TEXT);
+            CREATE TABLE IF NOT EXISTS mirror_plan (id INTEGER PRIMARY KEY,
+              share TEXT,rel TEXT,seen TEXT,size INTEGER,status TEXT,error TEXT,UNIQUE(share,rel));
+            CREATE INDEX IF NOT EXISTS files_inventory ON files(share,seen,id);
         ''')
         self.scan_id = self.meta('scan_id')
         columns = {r[1] for r in self.db.execute('PRAGMA table_info(files)')}
         if 'local_mtime' not in columns:
             self.db.execute('ALTER TABLE files ADD COLUMN local_mtime INTEGER')
+            self.db.commit()
+        if 'plan_action' not in columns:
+            self.db.execute('ALTER TABLE files ADD COLUMN plan_action TEXT')
+            self.db.commit()
+        if 'audit_seen' not in columns:
+            self.db.execute('ALTER TABLE files ADD COLUMN audit_seen TEXT')
             self.db.commit()
         for key in config['shares']:
             if not self.meta(f'task:{key}:scan_id'):
@@ -129,6 +143,72 @@ class Engine:
 
     def close(self):
         self.db.close()
+
+    def select_file(self, row):
+        self.current_file = {'id':row['id'],'size':row['size'],'share':row['share'],'rel':row['rel']}
+        if self.overall:
+            self.overall.select(row['id'],row['size'])
+
+    def file_event(self, value):
+        if self.current_file:
+            value = dict(value, id=self.current_file['id'])
+        if self.overall:
+            self.overall.update(value['phase'],value['done'],value['size'])
+        self.emit('file',value)
+        self.overall_event()
+
+    def overall_event(self, force=False):
+        if not self.overall:
+            return
+        now = time.monotonic()
+        if force or self.overall.phase != self.last_phase or now-self.last_overall >= .15:
+            self.last_overall = now
+            self.last_phase = self.overall.phase
+            self.emit('overall',self.overall.snapshot())
+
+    def start_progress(self, mode):
+        files,size,done,done_bytes = 0,0,0,0
+        for key in self.config['shares']:
+            row = self.db.execute("""SELECT count(*) n,coalesce(sum(size),0) b,
+                coalesce(sum(status='verified' AND target=?),0) v,
+                coalesce(sum(CASE WHEN status='verified' AND target=? THEN size ELSE 0 END),0) vb
+                FROM files WHERE share=? AND seen=?""",(self.target(key),self.target(key),key,self.task_id(key))).fetchone()
+            files += row['n']
+            size += row['b']
+            if mode == 'backup':
+                done += row['v']
+                done_bytes += row['vb']
+                files += self.db.execute('SELECT count(*) FROM mirror_plan WHERE share=? AND seen=?',
+                    (key,self.task_id(key))).fetchone()[0]
+            else:
+                self.meta(f'task:{key}:audit_run',self.task_id(key))
+        self.overall = OverallProgress(files,size,done,done_bytes,mode,self.scan_errors())
+        self.overall_event(True)
+
+    def complete_progress(self, row):
+        if self.overall:
+            self.overall.complete(row['size'])
+        self.emit('complete_file',{'id':row['id'],'share':row['share'],'rel':row['rel'],'bytes':row['size']})
+        self.current_file = None
+        self.overall_event(True)
+
+    def failed_progress(self, row, error):
+        if self.overall:
+            self.overall.fail()
+            self.overall.issues = self.active_issues()
+        self.emit('file_failed',{'id':row['id'],'share':row['share'],'rel':row['rel'],'error':str(error)})
+        self.current_file = None
+        self.overall_event(True)
+
+    def finish_progress(self, state):
+        if self.overall:
+            if state == 'done' and self.overall.completed_files != self.overall.files and not self.active_issues():
+                self.issue('copy','', '', '执行清单仍有未完成项目，请重新分析')
+            if state == 'done' and self.active_issues():
+                state = 'failed'
+            self.overall.finish(state,self.active_issues())
+            self.current_file = None
+            self.overall_event(True)
 
     def meta(self, key, value=None):
         if value is not None:
@@ -342,6 +422,7 @@ class Engine:
         unassigned = []
         task_plans = {}
         for share in self.config['shares']:
+            self.db.execute('DELETE FROM mirror_plan WHERE share=?',(share,))
             target = self.target(share)
             if not target:
                 unassigned.append(share)
@@ -353,20 +434,38 @@ class Engine:
             group['shares'].append(share)
             plan = {'new': 0, 'update': 0, 'unchanged': 0, 'bytes': 0, 'extra': 0}
             task_plans[share] = plan
+            planned = 0
             for row in self.db.execute('SELECT * FROM files WHERE share=? AND seen=?', (share, self.task_id(share))):
                 self.check_stop()
                 if row['status'] != 'verified' or not self.check_local_file(row):
                     # Do not credit partial files; conservative scan avoids understating demand.
                     group['needed'] += row['size'] + 4096
                     plan['bytes'] += row['size']
-                    plan['update' if os.path.exists(self.data_path(share, row['rel'])) else 'new'] += 1
+                    action = 'update' if os.path.exists(self.data_path(share,row['rel'])) else 'new'
+                    plan[action] += 1
+                    if row['status'] == 'verified':
+                        self.db.execute("UPDATE files SET status='pending' WHERE id=?",(row['id'],))
                 else:
+                    action = 'skip'
                     plan['unchanged'] += 1
+                if row['plan_action'] != action:
+                    self.db.execute('UPDATE files SET plan_action=? WHERE id=?',(action,row['id']))
+                planned += 1
+                if planned % 500 == 0:
+                    self.db.commit()
+                    self.emit('planning',{'share':share,'files':planned})
             ndirs = self.db.execute('SELECT count(*) FROM dirs WHERE share=? AND seen=?',
                                    (share, self.task_id(share))).fetchone()[0]
             group['needed'] += ndirs * 4096
             if self.config['shares'][share].get('mode') == 'mirror':
-                plan['extra'] = sum(1 for _ in self.extra_files(share))
+                for rel in self.extra_files(share):
+                    size = os.stat(self.data_path(share,rel)).st_size
+                    self.db.execute('INSERT INTO mirror_plan(share,rel,seen,size,status) VALUES (?,?,?,?,?)',
+                        (share,rel,self.task_id(share),size,'pending'))
+                    plan['extra'] += 1
+            self.meta(f'task:{share}:plan_scan',self.task_id(share))
+            self.meta(f'task:{share}:plan_target',target)
+        self.db.commit()
         for group in groups.values():
             group['ok'] = group['needed'] + group['reserve'] <= group['free']
         return {'volumes': groups, 'unassigned': unassigned, 'tasks': task_plans,
@@ -426,6 +525,7 @@ class Engine:
         return h.hexdigest()
 
     def copy_file(self, row):
+        self.select_file(row)
         share, rel = row['share'], row['rel']
         target = self.target(share)
         source = longpath(os.path.join(self.root(share), rel))
@@ -446,7 +546,7 @@ class Engine:
             pass
         offset = os.path.getsize(part) if resume else 0
         if offset:
-            self.emit('file', {'share': share, 'rel': rel, 'phase': '核对续传段', 'done': offset, 'size': st.st_size})
+            self.file_event({'share': share, 'rel': rel, 'phase': '核对续传段', 'done': offset, 'size': st.st_size})
             if self.digest(source, offset) != self.digest(part, offset):
                 offset = 0
         self.ensure_space(target, st.st_size - offset + 4096)
@@ -473,7 +573,7 @@ class Engine:
                     out.flush()
                     os.fsync(out.fileno())
                     flushed = offset
-                self.emit('file', {'share': share, 'rel': rel, 'phase': '复制', 'done': offset,
+                self.file_event({'share': share, 'rel': rel, 'phase': '复制', 'done': offset,
                      'size': st.st_size, 'speed': (offset - initial) / max(.01, time.monotonic() - started)})
                 speed_limit = self.config['shares'][share].get('max_mibps', 0) * 1024 ** 2
                 if speed_limit:
@@ -484,12 +584,12 @@ class Engine:
             os.fsync(out.fileno())
             if fingerprint(os.fstat(src.fileno())) != fingerprint(st):
                 raise Changed('源文件复制期间发生变化')
-        self.emit('file', {'share': share, 'rel': rel, 'phase': 'SHA-256 校验来源', 'done': 0, 'size': st.st_size})
+        self.file_event({'share': share, 'rel': rel, 'phase': 'SHA-256 校验来源', 'done': 0, 'size': st.st_size})
         def source_progress(n):
-            self.emit('file', {'share': share, 'rel': rel, 'phase': 'SHA-256 校验来源', 'done': n, 'size': st.st_size})
+            self.file_event({'share': share, 'rel': rel, 'phase': 'SHA-256 校验来源', 'done': n, 'size': st.st_size})
         sha = self.digest(source, progress=source_progress)
-        self.emit('file', {'share': share, 'rel': rel, 'phase': 'SHA-256 校验本地', 'done': 0, 'size': st.st_size})
-        localsha = self.digest(part, progress=lambda n: self.emit('file', {
+        self.file_event({'share': share, 'rel': rel, 'phase': 'SHA-256 校验本地', 'done': 0, 'size': st.st_size})
+        localsha = self.digest(part, progress=lambda n: self.file_event({
             'share': share, 'rel': rel, 'phase': 'SHA-256 校验本地', 'done': n, 'size': st.st_size}))
         if fingerprint(os.stat(source)) != fingerprint(st):
             raise Changed('校验期间源文件发生变化')
@@ -511,9 +611,19 @@ class Engine:
         self.db.execute('''UPDATE files SET status='verified',target=?,sha256=?,verified_at=?,local_mtime=?,error=NULL
                         WHERE id=?''', (target, sha, time.strftime('%Y-%m-%d %H:%M:%S'), os.stat(dst).st_mtime_ns, row['id']))
         self.db.commit()
-        self.emit('complete_file', {'share': share, 'bytes': st.st_size})
+        self.complete_progress(row)
 
     def backup(self):
+        try:
+            return self._backup()
+        except Stopped:
+            self.finish_progress('paused')
+            raise
+        except Exception:
+            self.finish_progress('failed')
+            raise
+
+    def _backup(self):
         self.check_stop()
         self.validate_configuration()
         if any(self.meta(f'task:{key}:scan_complete') != '1' for key in self.config['shares']):
@@ -527,6 +637,7 @@ class Engine:
             self.db.execute("DELETE FROM issues WHERE phase IN ('copy','audit') AND (share=? OR share='')", (key,))
             self.meta(f'task:{key}:audit_ok','0')
         self.db.commit()
+        self.start_progress('backup')
         last_summary = time.monotonic()
         for share in self.config['shares']:
             self.prepare_target(share)
@@ -560,6 +671,7 @@ class Engine:
                         self.db.execute("UPDATE files SET status='error',error=? WHERE id=?", (str(e), row['id']))
                         self.db.commit()
                         self.issue('copy', share, row['rel'], e)
+                        self.failed_progress(row,e)
                         if retryable:
                             raise OSError('连接连续重试后仍不可用；本轮停止，稍后点击继续。') from e
                         break
@@ -567,13 +679,17 @@ class Engine:
                         self.db.execute("UPDATE files SET status='error',error=? WHERE id=?", (str(e), row['id']))
                         self.db.commit()
                         self.issue('copy', share, row['rel'], e)
+                        self.failed_progress(row,e)
                         break
                 if time.monotonic() - last_summary >= 2:
                     self.emit('summary', self.summary())
                     last_summary = time.monotonic()
         for share in self.config['shares']:
             if self.config['shares'][share].get('mode') == 'mirror':
+                self.overall.phase = '镜像整理与回收'
+                self.overall_event(True)
                 self.recycle_extras(share)
+        self.finish_progress('done')
         self.emit('summary', self.summary())
         self.export_report()
         self.log('本轮执行结束。可运行「完整校验」比对来源与目标。')
@@ -629,6 +745,15 @@ class Engine:
             self.db.execute('INSERT INTO versions VALUES (?,?,?,?)',
                 (share, rel, recycled, time.strftime('%Y-%m-%d %H:%M:%S')))
             self.db.commit()
+            item = self.db.execute('SELECT id FROM mirror_plan WHERE share=? AND rel=? AND seen=?',
+                (share,rel,self.task_id(share))).fetchone()
+            if item:
+                self.db.execute("UPDATE mirror_plan SET status='done' WHERE id=?",(item[0],))
+                self.db.commit()
+                if self.overall:
+                    self.overall.complete(0)
+                self.emit('recycled_file',{'id':item[0],'share':share,'rel':rel})
+                self.overall_event(True)
             self.log('镜像回收（保留可恢复副本）：' + rel)
         # Remove target-only EMPTY directories after recycling files; retain a directory record.
         stack, folders = [('', self.data_path(share))], []
@@ -667,6 +792,16 @@ class Engine:
             self.db.commit()
 
     def audit(self):
+        try:
+            return self._audit()
+        except Stopped:
+            self.finish_progress('paused')
+            raise
+        except Exception:
+            self.finish_progress('failed')
+            raise
+
+    def _audit(self):
         """Fresh inventory + read/hash EVERY source and destination + another inventory."""
         self.meta('audit_ok', '0')
         for key in self.config['shares']:
@@ -677,8 +812,10 @@ class Engine:
         if self.scan_errors():
             self.export_report()
             raise ValueError('扫描存在不可读取项目，无法通过最终校验')
+        self.start_progress('audit')
         for row in self.db.execute('SELECT * FROM files WHERE seen=? ORDER BY id', (baseline,)):
             self.check_stop()
+            self.select_file(row)
             share, rel = row['share'], row['rel']
             try:
                 if row['status'] != 'verified' or not self.check_local_file(row):
@@ -687,23 +824,25 @@ class Engine:
                 dst = self.data_path(share, rel)
                 before = os.stat(src)
                 dst_before = os.stat(dst)
-                self.emit('file', {'share': share, 'rel': rel, 'phase': '完整校验来源', 'done': 0, 'size': row['size']})
+                self.file_event({'share': share, 'rel': rel, 'phase': '完整校验来源', 'done': 0, 'size': row['size']})
                 def tick(n):
-                    self.emit('file', {'share': share, 'rel': rel, 'phase': '完整校验来源', 'done': n, 'size': row['size']})
+                    self.file_event({'share': share, 'rel': rel, 'phase': '完整校验来源', 'done': n, 'size': row['size']})
                 a = self.digest(src, progress=tick)
-                b = self.digest(dst, progress=lambda n: self.emit('file', {
+                b = self.digest(dst, progress=lambda n: self.file_event({
                     'share': share, 'rel': rel, 'phase': '最终校验本地', 'done': n, 'size': row['size']}))
                 if fingerprint(before) != [row['size'], row['mtime']] or fingerprint(os.stat(src)) != fingerprint(before):
                     raise Changed('最终校验期间源文件发生变化')
                 if fingerprint(os.stat(dst)) != fingerprint(dst_before) or a != b:
                     raise Changed('源文件与本地副本不一致或本地文件校验中变化')
-                self.db.execute('UPDATE files SET sha256=?,verified_at=? WHERE id=?',
-                    (a, time.strftime('%Y-%m-%d %H:%M:%S'), row['id']))
+                self.db.execute('UPDATE files SET sha256=?,verified_at=?,audit_seen=? WHERE id=?',
+                    (a, time.strftime('%Y-%m-%d %H:%M:%S'), baseline, row['id']))
                 self.db.commit()
+                self.complete_progress(row)
             except (OSError, ValueError, Changed) as e:
                 self.db.execute("UPDATE files SET status='error',error=? WHERE id=?", (str(e), row['id']))
                 self.db.commit()
                 self.issue('audit', share, rel, e)
+                self.failed_progress(row,e)
         # Check directory existence, including empty dirs, and record baseline in a temporary table.
         for d in self.db.execute('SELECT * FROM dirs WHERE seen=?', (baseline,)):
             try:
@@ -718,6 +857,8 @@ class Engine:
         self.db.execute('INSERT INTO audit_baseline SELECT share,rel,size,mtime FROM files WHERE seen=?', (baseline,))
         self.db.execute('INSERT INTO audit_dirs SELECT share,rel FROM dirs WHERE seen=?', (baseline,))
         self.db.commit()
+        self.overall.phase = '确认校验后的清单'
+        self.overall_event(True)
         self.scan()
         delta = self.db.execute('''SELECT count(*) FROM (
           SELECT share,rel,size,mtime FROM files WHERE seen=? EXCEPT
@@ -742,6 +883,7 @@ class Engine:
             self.meta(f'task:{key}:audit_ok', '1' if ok else '0')
             self.meta(f'task:{key}:audit_time', time.strftime('%Y-%m-%d %H:%M:%S'))
         self.meta('audit_time', time.strftime('%Y-%m-%d %H:%M:%S'))
+        self.finish_progress('done' if ok else 'failed')
         self.export_report()
         self.log('完整校验' + ('通过' if ok else '未通过；查看报告'))
         return ok
