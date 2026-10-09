@@ -16,6 +16,7 @@ FILES = {
     'LICENSE': 'LICENSE',
     'THIRD_PARTY_NOTICES.md': 'THIRD_PARTY_NOTICES.md',
     'docs/user-guide.txt': '使用说明.txt',
+    'docs/images/sync-progress.png': 'docs/images/sync-progress.png',
     'docs/BUILD.md': 'docs/BUILD.md',
     'docs/RELEASE.md': 'docs/RELEASE.md',
     f'docs/release-notes-v{__version__}.md': f'docs/release-notes-v{__version__}.md',

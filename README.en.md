@@ -5,6 +5,12 @@ Extract the release ZIP and run `FolderFlow.exe`. No installer or separate Pytho
 
 [中文 README](README.md) · [Build instructions](docs/BUILD.md) · [Release process](docs/RELEASE.md)
 
+## Screenshot
+
+![FolderFlow overall progress, current-file progress and paginated file queue](docs/images/sync-progress.png)
+
+Chinese UI with demo files, showing overall and current-file progress alongside the searchable, paginated sync queue.
+
 ## Features
 
 - Named independent tasks, selected-task or enabled-task batch execution.
