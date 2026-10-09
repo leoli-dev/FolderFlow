@@ -55,7 +55,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
 This creates a local `.venv`, installs pinned build dependencies, runs the tests and produces:
 
 - `dist/FolderFlow/FolderFlow.exe`
-- `dist/FolderFlow-2.2.0-windows-x64-portable.zip`
+- `dist/FolderFlow-2.3.0-windows-x64-portable.zip`
 - `dist/SHA256SUMS.txt`
 
 The release is built from an explicit allowlist in a fresh staging directory.
@@ -92,3 +92,20 @@ Pause and close a running older build before upgrading; keep `data/` to resume.
 
 MIT applies to application source. Bundled runtime components retain their own licenses:
 [LICENSE](LICENSE), [third-party notices](THIRD_PARTY_NOTICES.md).
+
+## Performance
+
+Edit a task → **Performance & retries** to set scan/analysis workers (1–16, default 4)
+and transfer workers (1–8, default 1). Try 2–4 transfer workers for small files;
+use 1 for busy mechanical disks. A copy rate limit forces one worker so the limit
+continues to apply to the whole task. Threads overlap I/O and hashing while one
+coordinator owns manifest writes and publishes verified files.
+
+Every copied file still gets independent source and local SHA-256 reads, source
+change checks, and resumable-prefix validation. Overall progress aggregates active
+files and only counts completion after publication and a durable database commit.
+Full audit remains serial. Parallelism does not guarantee gains for one flat directory,
+large files saturating a network link, or disks already at capacity.
+See [performance notes and isolated benchmarks](docs/PERFORMANCE.md).
+
+![Performance & retries: scan and transfer workers](docs/images/performance-en.png)

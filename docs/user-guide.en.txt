@@ -47,3 +47,9 @@ Copies regular file content and directories, excluding ACLs, ownership, alternat
 streams and links/reparse points. It is not a system image or an atomic snapshot.
 Stop live database writes or use native exports when application consistency is needed.
 Destination-side permissions and encryption apply; the app does not provide its own encryption.
+
+Performance: Edit task → Performance & retries. Scan/analysis workers: 1–16 (default 4);
+transfer workers: 1–8 (default 1). Try 2–4 for small files, 1 for busy HDDs. A copy rate
+limit uses one worker. Source and local SHA-256 validation and resumable state remain.
+Overall progress aggregates active files; the file bar shows the most recently updated
+file. Full audit remains serial. Older task and partial-file formats are compatible.

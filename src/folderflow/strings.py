@@ -1,5 +1,11 @@
 """English display catalogue; original Chinese messages are stable keys."""
-EN = {'版本备份': 'Versioned backup',
+EN = {'性能与重试':'Performance & retries',
+ '扫描并发':'Scan workers',
+ '传输并发':'Transfer workers',
+ '传输建议先试 2–4；机械盘可用 1。设置复制限速时使用单并发。':'Try 2–4 transfer workers first; use 1 for busy HDDs. A copy rate limit uses one worker.',
+ '并发数必须是允许范围内的整数':'Worker count must be an integer within the allowed range',
+ ' · 活跃文件 {p0}':' · Active files {p0}',
+ '版本备份': 'Versioned backup',
  '单向同步': 'One-way sync',
  '镜像同步': 'Mirror sync',
  '来源 → 目标；保留目标独有文件，并保留每次替换前的旧版本。': 'Source → destination; keep destination-only files and retain versions '

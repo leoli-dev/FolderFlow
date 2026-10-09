@@ -1,4 +1,4 @@
-FolderFlow 2.2.0 — Windows 文件备份与同步
+FolderFlow 2.3.0 — Windows 文件备份与同步
 2026-10-08
 
 开始使用
@@ -116,3 +116,8 @@ src\folderflow\engine.py：扫描、容量、复制、续传、版本、镜像�
 tests\：隔离测试。
 在仓库根目录编译：powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1
 构建步骤详见 docs\BUILD.md。
+
+性能：编辑任务 → 性能与重试。扫描/分析并发 1–16（默认 4），传输并发 1–8（默认 1）。
+大量小文件可先试传输 2–4；机械盘繁忙时使用 1。设置复制限速会按单线程执行。
+并发仍执行来源和本地的 SHA-256 校验，任务和续传格式兼容旧版。
+总体进度合计所有活跃文件；当前文件栏展示最近更新的一个文件。完整校验仍为串行。

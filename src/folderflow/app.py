@@ -521,6 +521,10 @@ class App:
                 self.show_overall(dict(metrics,percent=percent,state='preview',eta_seconds=None,phase=self.t('清单')))
 
     def show_overall(self,value):
+        for file_id,phase in value.get('active_items',{}).items():
+            uid = 'file:'+str(file_id)
+            if self.file_table.exists(uid):
+                self.file_table.set(uid,'state',self.t('校验中') if '校验' in phase or '续传' in phase else self.t('复制中'))
         self.overall_bar.stop()
         self.overall_bar.configure(mode='determinate')
         self.overall_bar['value'] = value['percent']
@@ -530,6 +534,8 @@ class App:
             minutes = max(1,round(eta/60))
             eta_text = self.t(' · 预计剩余 {p0} 小时 {p1} 分', p0=minutes // 60, p1=minutes % 60) if minutes >= 60 else self.t(' · 预计剩余 {p0} 分', p0=minutes)
         failures = max(value.get('failed_files',0),value.get('issues',0))
+        if value.get('active_files',0) > 1:
+            eta_text = self.t(' · 活跃文件 {p0}',p0=value['active_files'])+eta_text
         keys = self.active_ids if self.last_overall is not None else self.inventory_ids()
         names = [self.config['shares'][key].get('label',key) for key in keys if key in self.config['shares']]
         scope = '、'.join(names[:2])+(self.t(' 等') if len(names)>2 else '')
@@ -557,8 +563,10 @@ class App:
         tabs.pack(fill='both', expand=True, padx=16, pady=16)
         general = ttk.Frame(tabs, padding=18)
         advanced = ttk.Frame(tabs, padding=18)
+        performance = ttk.Frame(tabs,padding=18)
         tabs.add(general, text=self.t('任务'))
         tabs.add(advanced, text=self.t('过滤与传输选项'))
+        tabs.add(performance,text=self.t('性能与重试'))
         name = tk.StringVar(value=previous.get('label','') + (self.t(' 副本') if copy_from else ''))
         source = tk.StringVar(value=previous.get('source',''))
         target = tk.StringVar(value='' if copy_from else previous.get('target',''))
@@ -569,6 +577,8 @@ class App:
         rate = tk.StringVar(value=str(previous.get('max_mibps',0)))
         retries = tk.StringVar(value=str(previous.get('retry_limit',30)))
         wait = tk.StringVar(value=str(previous.get('retry_seconds',10)))
+        scan_workers = tk.StringVar(value=str(previous.get('scan_workers',4)))
+        copy_workers = tk.StringVar(value=str(previous.get('copy_workers',1)))
         def field(parent, row, title, var):
             ttk.Label(parent, text=title).grid(row=row, column=0, sticky='w', pady=(8, 3))
             entry = ttk.Entry(parent, textvariable=var, width=62)
@@ -608,9 +618,19 @@ class App:
         exclude = tk.StringVar(value='; '.join(previous.get('exclude',[])))
         field(advanced, 2, self.t('排除文件或目录 · 例如 *.tmp; cache/**; .git/**'), exclude)
         field(advanced, 4, self.t('至少保留的目标空闲空间 · GiB（可设为 0）'), reserve)
-        field(advanced, 6, self.t('复制限速 · MiB/s（0 不限速）'), rate)
-        field(advanced, 8, self.t('连接 / 文件占用重试次数'), retries)
-        field(advanced, 10, self.t('两次重试之间的间隔 · 秒'), wait)
+        field(performance, 0, self.t('复制限速 · MiB/s（0 不限速）'), rate)
+        field(performance, 2, self.t('连接 / 文件占用重试次数'), retries)
+        field(performance, 4, self.t('两次重试之间的间隔 · 秒'), wait)
+        concurrency = ttk.Frame(performance)
+        concurrency.grid(row=6,column=0,sticky='w',pady=8)
+        ttk.Label(concurrency,text=self.t('扫描并发')).pack(side='left')
+        ttk.Combobox(concurrency,textvariable=scan_workers,values=list(range(1,17)),
+            state='readonly',width=4).pack(side='left',padx=(8,24))
+        ttk.Label(concurrency,text=self.t('传输并发')).pack(side='left')
+        ttk.Combobox(concurrency,textvariable=copy_workers,values=list(range(1,9)),
+            state='readonly',width=4).pack(side='left',padx=8)
+        ttk.Label(performance,text=self.t('传输建议先试 2–4；机械盘可用 1。设置复制限速时使用单并发。'),
+            wraplength=round(620*self.scale),foreground='#53647a').grid(row=7,column=0,sticky='w')
         note = tk.StringVar(value=self.t('新任务只在点击执行后写入目标。来源保持只读。'))
         ttk.Label(dialog, textvariable=note, wraplength=round(650*self.scale), foreground='#8a4b00').pack(anchor='w', padx=34, pady=(0,8))
         bottom = ttk.Frame(dialog, padding=(16,0,16,16))
@@ -623,6 +643,7 @@ class App:
                     'layout': previous.get('layout','direct') if editing else 'direct',
                     'reserve_gib': float(reserve.get()), 'max_mibps': float(rate.get()),
                     'retry_limit': int(retries.get()), 'retry_seconds': float(wait.get()),
+                    'scan_workers':int(scan_workers.get()), 'copy_workers':int(copy_workers.get()),
                     'include': [x.strip() for x in include.get().split(';') if x.strip()],
                     'exclude': [x.strip() for x in exclude.get().split(';') if x.strip()]}
                 key = self.save_task(payload, editing)
@@ -778,7 +799,8 @@ class App:
             finally:
                 if engine:
                     try:
-                        engine.export_report()
+                        if not engine.report_exported:
+                            engine.export_report()
                         self.event('summary',engine.summary())
                     except Exception:
                         pass

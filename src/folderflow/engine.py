@@ -91,6 +91,8 @@ def paths_overlap(first, second):
 
 
 class Engine:
+    RETRYABLE = (32, 33, 53, 54, 59, 64, 67, 121, 1231, 1232, 1236, 10053, 10054, 10060)
+
     def __init__(self, state_dir, config, emit=None, reserve_fn=reserve):
         self.state = Path(state_dir)
         self.state.mkdir(parents=True, exist_ok=True)
@@ -98,6 +100,9 @@ class Engine:
         self.emit = emit or (lambda *args, **kw: None)
         self.reserve_fn = reserve_fn
         self.stop = threading.Event()
+        self.write_lock = threading.Lock()
+        self.space_context = None
+        self.report_exported = False
         self.retry_seconds = 10
         self.retry_limit = 30
         self.overall = None
@@ -151,9 +156,12 @@ class Engine:
 
     def file_event(self, value):
         if self.current_file:
-            value = dict(value, id=self.current_file['id'])
+            value = dict(value, id=value.get('id',self.current_file['id']))
         if self.overall:
-            self.overall.update(value['phase'],value['done'],value['size'])
+            file_id = value.get('id')
+            if file_id is not None and file_id not in self.overall.inflight:
+                self.overall.select(file_id,value['size'])
+            self.overall.update(value['phase'],value['done'],value['size'],file_id)
         self.emit('file',value)
         self.overall_event()
 
@@ -187,14 +195,14 @@ class Engine:
 
     def complete_progress(self, row):
         if self.overall:
-            self.overall.complete(row['size'])
+            self.overall.complete(row['size'],row['id'])
         self.emit('complete_file',{'id':row['id'],'share':row['share'],'rel':row['rel'],'bytes':row['size']})
         self.current_file = None
         self.overall_event(True)
 
     def failed_progress(self, row, error):
         if self.overall:
-            self.overall.fail()
+            self.overall.fail(row['id'])
             self.overall.issues = self.active_issues()
         self.emit('file_failed',{'id':row['id'],'share':row['share'],'rel':row['rel'],'error':str(error)})
         self.current_file = None
@@ -290,6 +298,10 @@ class Engine:
                 raise ValueError('来源必须是完整路径：' + source)
             if entry.get('target') and not os.path.isabs(entry['target']):
                 raise ValueError('目标必须是完整路径：' + entry['target'])
+            for option, default, maximum in (('scan_workers',4,16),('copy_workers',1,8)):
+                value = entry.get(option,default)
+                if isinstance(value,bool) or not isinstance(value,int) or not 1 <= value <= maximum:
+                    raise ValueError('并发数必须是允许范围内的整数')
             for option in ('reserve_gib','max_mibps','retry_limit','retry_seconds'):
                 value = float(entry.get(option, 0))
                 if not math.isfinite(value) or value < 0:
@@ -324,54 +336,39 @@ class Engine:
         for share in self.config['shares']:
             self.log('扫描 ' + share)
             share_count, share_bytes, excluded = 0, 0, 0
-            stack = [('', self.root(share))]
-            while stack:
+            from .concurrency import scan_batches
+            last_commit = time.monotonic()
+            for batch in scan_batches(self,share,self.config['shares'][share].get('scan_workers',4)):
                 self.check_stop()
-                rel, directory = stack.pop()
-                try:
-                    dst = os.lstat(longpath(directory))
-                    if is_link(dst):
-                        raise ValueError('源目录为链接/reparse point，需单独处理')
-                    self.db.execute('INSERT OR REPLACE INTO dirs VALUES (?,?,?)',
-                                    (share, rel, self.scan_id))
-                    with os.scandir(longpath(directory)) as entries:
-                        for ent in entries:
-                            self.check_stop()
-                            childrel = os.path.join(rel, ent.name)
-                            try:
-                                st = ent.stat(follow_symlinks=False)
-                                if not self.matches(share, childrel, stat.S_ISDIR(st.st_mode)):
-                                    excluded += 1
-                                    continue
-                                if is_link(st):
-                                    raise ValueError('链接/reparse point 未复制，需单独处理')
-                                if stat.S_ISDIR(st.st_mode):
-                                    stack.append((childrel, os.path.join(directory, ent.name)))
-                                elif stat.S_ISREG(st.st_mode):
-                                    self.db.execute('''INSERT INTO files
-                                      (share,rel,size,mtime,seen) VALUES (?,?,?,?,?)
-                                      ON CONFLICT(share,rel) DO UPDATE SET
-                                      status=CASE WHEN files.size!=excluded.size OR
-                                        files.mtime!=excluded.mtime THEN 'pending' ELSE files.status END,
-                                      size=excluded.size,mtime=excluded.mtime,seen=excluded.seen''',
-                                      (share, childrel, st.st_size, st.st_mtime_ns, self.scan_id))
-                                    count += 1
-                                    total += st.st_size
-                                    share_count += 1
-                                    share_bytes += st.st_size
-                                    if count % 200 == 0:
-                                        self.db.commit()
-                                        self.emit('scan', {'files': count, 'bytes': total, 'share': share,
-                                            'share_files': share_count, 'share_bytes': share_bytes})
-                                else:
-                                    raise ValueError('非普通文件，需单独处理')
-                            except OSError as e:
-                                self.issue('scan', share, childrel, e)
-                            except ValueError as e:
-                                self.issue('scan', share, childrel, e)
-                except (OSError, ValueError) as e:
-                    self.issue('scan', share, rel, e)
-                self.db.commit()
+                files, directories = [], []
+                for item in batch:
+                    kind = item[0]
+                    if kind == 'directory':
+                        directories.append((share,item[1],self.scan_id))
+                    elif kind == 'excluded':
+                        excluded += 1
+                    elif kind == 'error':
+                        self.issue('scan',share,item[1],item[2])
+                    elif kind == 'file':
+                        files.append((share,*item[1:],self.scan_id))
+                        count += 1
+                        total += item[2]
+                        share_count += 1
+                        share_bytes += item[2]
+                self.db.executemany('INSERT OR REPLACE INTO dirs VALUES (?,?,?)',directories)
+                self.db.executemany('''INSERT INTO files (share,rel,size,mtime,seen) VALUES (?,?,?,?,?)
+                    ON CONFLICT(share,rel) DO UPDATE SET
+                    status=CASE WHEN files.size!=excluded.size OR files.mtime!=excluded.mtime
+                        THEN 'pending' ELSE files.status END,
+                    size=excluded.size,mtime=excluded.mtime,seen=excluded.seen''',files)
+                # A partial scan is never executable, so batch its durable checkpoints.
+                if time.monotonic()-last_commit >= .5:
+                    self.db.commit()
+                    last_commit = time.monotonic()
+                if files:
+                    self.emit('scan', {'files':count,'bytes':total,'share':share,
+                        'share_files':share_count,'share_bytes':share_bytes})
+            self.db.commit()
             self.meta(f'task:{share}:scan_complete', '1')
             self.meta(f'task:{share}:scan_time', time.strftime('%Y-%m-%d %H:%M:%S'))
             self.meta(f'task:{share}:excluded', excluded)
@@ -435,13 +432,12 @@ class Engine:
             plan = {'new': 0, 'update': 0, 'unchanged': 0, 'bytes': 0, 'extra': 0}
             task_plans[share] = plan
             planned = 0
-            for row in self.db.execute('SELECT * FROM files WHERE share=? AND seen=?', (share, self.task_id(share))):
+            for row, action in self.planning_rows(share):
                 self.check_stop()
-                if row['status'] != 'verified' or not self.check_local_file(row):
+                if action != 'skip':
                     # Do not credit partial files; conservative scan avoids understating demand.
                     group['needed'] += row['size'] + 4096
                     plan['bytes'] += row['size']
-                    action = 'update' if os.path.exists(self.data_path(share,row['rel'])) else 'new'
                     plan[action] += 1
                     if row['status'] == 'verified':
                         self.db.execute("UPDATE files SET status='pending' WHERE id=?",(row['id'],))
@@ -471,6 +467,25 @@ class Engine:
         return {'volumes': groups, 'unassigned': unassigned, 'tasks': task_plans,
                 'ok': not unassigned and all(g['ok'] for g in groups.values())}
 
+    def planning_rows(self, share):
+        from concurrent.futures import ThreadPoolExecutor
+        def inspect(row):
+            self.check_stop()
+            if row['status'] == 'verified' and self.check_local_file(row):
+                return row,'skip'
+            return row,'update' if os.path.exists(self.data_path(share,row['rel'])) else 'new'
+        cursor = self.db.execute('SELECT * FROM files WHERE share=? AND seen=?',(share,self.task_id(share)))
+        # Fetch on the owner; workers only read filesystem metadata. Bound memory
+        # for million-file inventories instead of eagerly scheduling all rows.
+        pool = ThreadPoolExecutor(max_workers=self.config['shares'][share].get('scan_workers',4),
+            thread_name_prefix='plan')
+        try:
+            while batch := cursor.fetchmany(256):
+                self.check_stop()
+                yield from pool.map(inspect,batch)
+        finally:
+            pool.shutdown(wait=True,cancel_futures=True)
+
     def prepare_target(self, share):
         target = self.target(share)
         if not target:
@@ -499,12 +514,24 @@ class Engine:
             os.makedirs(self.control_path(share, sub), exist_ok=True)
         return target
 
+    def build_space_context(self):
+        context = {}
+        volumes = {}
+        for key in self.config['shares']:
+            target = self.target(key)
+            if target:
+                vol = volume(target)
+                context[target] = vol
+                volumes[vol] = max(volumes.get(vol,0),self.task_reserve(key))
+        self.space_context = (context,volumes)
+
     def ensure_space(self, target, required):
-        free = shutil.disk_usage(volume(target)).free
-        this_volume = volume(target)
-        keep = max((self.task_reserve(key) for key in self.config['shares']
-            if self.target(key) and volume(self.target(key)) == this_volume), default=self.reserve_fn(target))
-        if free - required < keep:
+        if self.space_context is None:
+            self.build_space_context()
+        context,reserves = self.space_context
+        vol = context[target]
+        free = shutil.disk_usage(vol).free
+        if free - required < reserves[vol]:
             raise NoSpace('磁盘空间不足或已到保留空间下限：' + target)
 
     def digest(self, path, limit=None, progress=None):
@@ -525,6 +552,10 @@ class Engine:
         return h.hexdigest()
 
     def copy_file(self, row):
+        self.publish_file(row,self.transfer_file(row))
+
+    def transfer_file(self, row):
+        self.check_stop()
         self.select_file(row)
         share, rel = row['share'], row['rel']
         target = self.target(share)
@@ -556,7 +587,7 @@ class Engine:
             os.fsync(f.fileno())
         os.makedirs(self.data_path(share, os.path.dirname(rel)), exist_ok=True)
         started, initial = time.monotonic(), offset
-        with open(source, 'rb') as src, open(part, 'r+b' if os.path.exists(part) else 'w+b') as out:
+        with open(source, 'rb') as src, open(part, 'r+b' if os.path.exists(part) else 'w+b', buffering=0) as out:
             out.truncate(offset)
             out.seek(offset)
             src.seek(offset)
@@ -566,8 +597,11 @@ class Engine:
                 chunk = src.read(min(BLOCK, st.st_size - offset))
                 if not chunk:
                     raise Changed('源文件提前结束')
-                self.ensure_space(target, len(chunk) + 4096)
-                out.write(chunk)
+                # Serialize admission + allocation so concurrent writers cannot each
+                # consume the same reported free space. Reads and hashes overlap.
+                with self.write_lock:
+                    self.ensure_space(target, len(chunk) + 4096)
+                    out.write(chunk)
                 offset += len(chunk)
                 if offset - flushed >= 64 * 1024 ** 2:
                     out.flush()
@@ -599,6 +633,20 @@ class Engine:
                 json.dump({}, f)
             raise Changed('哈希不一致，未标记完成；重新扫描/重试')
         os.utime(part, ns=(st.st_atime_ns, st.st_mtime_ns))
+        return {'part':part,'sha':sha,'fingerprint':fingerprint(st)}
+
+    def publish_file(self, row, result):
+        self.check_stop()
+        share,rel = row['share'],row['rel']
+        target = self.target(share)
+        # Validate destination ancestors again on the owner before any rename.
+        dst = self.data_path(share,rel)
+        part = self.control_path(share,f'parts/{row["id"]}.part')
+        source = longpath(os.path.join(self.root(share),rel))
+        st = os.lstat(source)
+        if is_link(st) or fingerprint(st) != result['fingerprint']:
+            raise Changed('校验期间源文件发生变化')
+        sha = result['sha']
         if os.path.exists(dst) and self.config['shares'][share].get('keep_versions', True):
             archive = self.control_path(share, f'versions/{row["id"]}/{uuid.uuid4().hex}')
             os.makedirs(self.control_path(share, f'versions/{row["id"]}'), exist_ok=True)
@@ -637,6 +685,8 @@ class Engine:
             self.db.execute("DELETE FROM issues WHERE phase IN ('copy','audit') AND (share=? OR share='')", (key,))
             self.meta(f'task:{key}:audit_ok','0')
         self.db.commit()
+        self.space_context = None
+        self.build_space_context()
         self.start_progress('backup')
         last_summary = time.monotonic()
         for share in self.config['shares']:
@@ -649,6 +699,16 @@ class Engine:
                 except (OSError, ValueError) as e:
                     self.issue('copy', share, d[0], e)
             rows = self.db.execute('SELECT * FROM files WHERE share=? AND seen=? ORDER BY id', (share, self.task_id(share)))
+            workers = self.config['shares'][share].get('copy_workers',1)
+            # Explicit bandwidth caps retain serial semantics (one task-wide cap).
+            if workers > 1 and not self.config['shares'][share].get('max_mibps',0):
+                from .concurrency import parallel_copy
+                self.log(f'并发传输：{workers} 个文件 · {share}')
+                for _ in parallel_copy(self,iter(rows),workers):
+                    if time.monotonic()-last_summary >= 10:
+                        self.emit('summary',self.summary())
+                        last_summary = time.monotonic()
+                continue
             for row in rows:
                 self.check_stop()
                 if row['status'] == 'verified' and self.check_local_file(row):
@@ -662,7 +722,7 @@ class Engine:
                     except OSError as e:
                         # Network and sharing errors can recover; permissions/path failures cannot.
                         win = getattr(e, 'winerror', None)
-                        retryable = win in (32, 33, 53, 54, 59, 64, 67, 121, 1231, 1232, 1236, 10053, 10054, 10060)
+                        retryable = win in self.RETRYABLE
                         if retryable and attempt < retry_limit:
                             self.log(f'连接/文件占用，{retry_seconds} 秒后重试：{share}/{row["rel"]} ({attempt+1})')
                             if self.stop.wait(retry_seconds):
@@ -681,7 +741,7 @@ class Engine:
                         self.issue('copy', share, row['rel'], e)
                         self.failed_progress(row,e)
                         break
-                if time.monotonic() - last_summary >= 2:
+                if time.monotonic() - last_summary >= 10:
                     self.emit('summary', self.summary())
                     last_summary = time.monotonic()
         for share in self.config['shares']:
@@ -693,6 +753,12 @@ class Engine:
         self.emit('summary', self.summary())
         self.export_report()
         self.log('本轮执行结束。可运行「完整校验」比对来源与目标。')
+
+    def record_copy_failure(self, row, error):
+        self.db.execute("UPDATE files SET status='error',error=? WHERE id=?",(str(error),row['id']))
+        self.db.commit()
+        self.issue('copy',row['share'],row['rel'],error)
+        self.failed_progress(row,error)
 
     def extra_files(self, share):
         root = self.data_path(share)
@@ -917,4 +983,5 @@ class Engine:
         with open(report / 'summary.json', 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         self.emit('report', str(report))
+        self.report_exported = True
         return report

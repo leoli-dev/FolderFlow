@@ -50,7 +50,7 @@ $env:PYTHONPATH = (Resolve-Path .\src).Path
 ## 输出与绿色行为
 
 - `dist/FolderFlow/`：可直接运行的软件目录。
-- `dist/FolderFlow-2.2.0-windows-x64-portable.zip`：干净、可公开分发的压缩包。
+- `dist/FolderFlow-2.3.0-windows-x64-portable.zip`：干净、可公开分发的压缩包。
 - `dist/SHA256SUMS.txt`：ZIP 的 SHA-256 校验值。
 
 成品 EXE 包含 Python/Tk，不要求最终用户安装依赖，不需要管理员权限。

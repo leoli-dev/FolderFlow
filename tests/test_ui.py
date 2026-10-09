@@ -64,6 +64,16 @@ class TaskUiTests(unittest.TestCase):
         self.assertFalse(self.view.busy)
         self.assertEqual(self.view.run_ids(),[])
 
+    def test_all_active_file_rows_show_work_even_when_latest_file_is_throttled(self):
+        for file_id in (1,2,3,4):
+            self.view.file_table.insert('', 'end',iid=f'file:{file_id}',values=('task','file','1','new','pending',''))
+        self.view.show_overall({'percent':20,'completed_files':0,'total_files':4,
+            'completed_bytes':0,'total_bytes':400,'phase':'复制','active_files':4,
+            'active_items':{1:'复制',2:'SHA-256 校验来源',3:'SHA-256 校验本地',4:'核对续传段'}})
+        self.assertEqual(self.view.file_table.set('file:1','state'),'复制中')
+        for file_id in (2,3,4):
+            self.assertEqual(self.view.file_table.set(f'file:{file_id}','state'),'校验中')
+
     def test_any_local_target_is_allowed_without_drive_letter_restriction(self):
         key=self.view.save_task(self.payload())
         self.assertEqual(self.view.config['shares'][key]['target'],str(self.target))
