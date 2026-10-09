@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools==81.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "folderflow"
+version = "2.0.0"
+description = "Portable Windows folder backup and one-way synchronization"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+license = "MIT"
+authors = [{name = "FolderFlow contributors"}]
+dependencies = []
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Win32 (MS Windows)",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Archiving :: Backup",
+]
+
+[project.gui-scripts]
+folderflow = "folderflow.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["folderflow*"]

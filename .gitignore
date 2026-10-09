@@ -1,0 +1,37 @@
+# Runtime state and private data: never commit these.
+data/
+reports/
+.local/
+**/.folderflow/
+**/_control/
+**/.nasrescue.json
+*.sqlite
+*.sqlite-*
+*.db
+*.log
+*.part
+*.env
+.env*
+
+# Development/build outputs.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+work/
+*.spec
+*.exe
+*.zip
+*.pfx
+*.p12
+
+# Editors and OS files.
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini

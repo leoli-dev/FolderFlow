@@ -1,0 +1,30 @@
+name: Bug report
+description: Report a problem using synthetic or redacted examples
+body:
+  - type: input
+    id: version
+    attributes:
+      label: FolderFlow version and Windows version
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Task mode
+      options:
+        - Versioned backup
+        - One-way update
+        - Mirror
+        - Build or startup
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction and expected behavior
+      description: Use temporary files; replace private paths and server names.
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Redacted error or relevant diagnostic
+      description: Do not attach credentials, personal configuration, manifests or backup data.

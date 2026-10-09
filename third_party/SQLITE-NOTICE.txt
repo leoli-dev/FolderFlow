@@ -1,0 +1,5 @@
+The packaged Python sqlite3 module uses the SQLite library.
+SQLite's deliverable library code is dedicated to the public domain.
+
+Official copyright and public-domain information:
+https://www.sqlite.org/copyright.html
