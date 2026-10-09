@@ -1,0 +1,49 @@
+FolderFlow — Portable Windows backup and one-way synchronization
+
+LANGUAGE
+The default is System / Auto: Chinese Windows UI selects Simplified Chinese;
+other Windows UI languages select English. Use the Language selector at the
+top of the window to override this with English or Simplified Chinese.
+The preference is saved beside the executable. Changes apply immediately when
+idle; the selector is disabled while tasks run. Task IDs, paths and resume
+records are never translated.
+
+GETTING STARTED
+Create a task, choose source and destination, then Analyze / Scan.
+Review the pending list and space requirements, then Run / Resume.
+Use Full verification for important backups. Source folders stay read-only.
+
+MODES
+Versioned backup: copy new/changed files; retain prior versions and destination-only files.
+One-way sync: copy new/changed files; keep destination-only files, optionally retaining prior versions.
+Mirror sync: move destination-only files into recoverable storage; source errors stop recycling.
+There is no bidirectional merge or automatic background scheduler.
+
+INVENTORY AND PROGRESS
+Filter pending/all/completed/failed/mirror items, search relative paths, or use
+200-item pages. Overall progress covers the selected scope and includes
+previously verified files. Copying and two hash reads contribute partial
+progress; a file counts as complete only after verified publication.
+Failed or paused runs do not show successful 100%. Remaining time is estimated.
+Full verification starts its own progress from zero. Activity logs are a separate tab.
+
+PORTABLE STATE AND RESUME
+Keep data/ beside FolderFlow.exe when upgrading or moving the application.
+Reports are in reports/. Partial files and versions are stored in the destination's
+.folderflow/task-ID/ directory. Do not delete those files to resume a task.
+Pause and close the old application before replacing its executable.
+Network shares use the current Windows session's credentials. Connect with
+File Explorer if necessary. A system-level I/O timeout can delay pausing.
+
+FILTERS AND TRANSFER
+Use semicolon-separated include/exclude globs, e.g. *.jpg; *.png or cache/**.
+Reserved free space is configurable in GiB; 0 is allowed. Copy limits use MiB/s;
+0 is unlimited. Retries and their delay are configurable.
+
+RESTORING AND SCOPE
+Reports list retained versions and mirror recycling locations. Copy the relevant
+retained file to your chosen destination to restore it. History is not purged automatically.
+Copies regular file content and directories, excluding ACLs, ownership, alternate
+streams and links/reparse points. It is not a system image or an atomic snapshot.
+Stop live database writes or use native exports when application consistency is needed.
+Destination-side permissions and encryption apply; the app does not provide its own encryption.

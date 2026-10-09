@@ -7,13 +7,14 @@ Extract the release ZIP and run `FolderFlow.exe`. No installer or separate Pytho
 
 ## Screenshot
 
-![FolderFlow overall progress, current-file progress and paginated file queue](docs/images/sync-progress.png)
+![FolderFlow English UI: overall progress, current-file progress and paginated file queue](docs/images/sync-progress-en.png)
 
-Chinese UI with demo files, showing overall and current-file progress alongside the searchable, paginated sync queue.
+English UI with demo files, showing overall and current-file progress alongside the searchable, paginated sync queue.
 
 ## Features
 
 - Named independent tasks, selected-task or enabled-task batch execution.
+- Automatic English/Simplified Chinese UI language, with a persistent manual override.
 - Local folders, removable disks, mapped drives and Windows SMB shares.
 - Versioned backup, one-way update and recoverable mirror synchronization.
 - Size/time change detection, SHA-256 verification, resumable copies and prefix validation.
@@ -37,6 +38,11 @@ Configuration and state live beside the executable in `data/`; reports live in `
 Keep `data/` when upgrading. No services or installation entries are registered.
 The single-file bundle temporarily extracts runtime files into the system temp folder during startup.
 
+The `Language / 语言` selector offers System, English and Simplified Chinese. System mode uses
+the Windows UI language: Chinese selects Simplified Chinese; all other languages select English.
+Switching applies immediately while idle and is disabled during active tasks. Task IDs, paths,
+user filenames and resume data remain unchanged. The English UI opens the bundled English guide.
+
 ## Build on Windows
 
 Use Python 3.13 x64 with Tcl/Tk. The locally validated OS is Windows 11 x64.
@@ -49,7 +55,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
 This creates a local `.venv`, installs pinned build dependencies, runs the tests and produces:
 
 - `dist/FolderFlow/FolderFlow.exe`
-- `dist/FolderFlow-2.1.0-windows-x64-portable.zip`
+- `dist/FolderFlow-2.2.0-windows-x64-portable.zip`
 - `dist/SHA256SUMS.txt`
 
 The release is built from an explicit allowlist in a fresh staging directory.

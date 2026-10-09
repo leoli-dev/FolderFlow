@@ -23,6 +23,7 @@ class TaskUiTests(unittest.TestCase):
         app.BASE=self.base/'app'
         app.STATE=app.BASE/'data'
         app.BASE.mkdir()
+        app.save_json(app.STATE/'config.json',{'version':2,'language':'zh_CN','shares':{}})
         self.root=tk.Tk()
         self.root.withdraw()
         self.view=app.App(self.root)
