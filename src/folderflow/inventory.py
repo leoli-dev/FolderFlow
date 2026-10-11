@@ -10,6 +10,38 @@ def empty_result(page_size=200):
                    'failed_files':0,'issues':0,'ready':False}}
 
 
+def load_summary(database, config, cancelled=None):
+    """Saved task totals without Engine initialization, schema writes or filesystem scans."""
+    path=Path(database)
+    if not path.is_file() or not config['shares']:
+        return {}
+    conn=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)
+    conn.row_factory=sqlite3.Row
+    if cancelled:
+        conn.set_progress_handler(lambda:int(cancelled()),10000)
+    try:
+        conn.execute('BEGIN')
+        meta=dict(conn.execute('SELECT key,value FROM meta'))
+        result={}
+        for key,entry in config['shares'].items():
+            seen=meta.get(f'task:{key}:scan_id',meta.get('scan_id',''))
+            target=entry.get('target','')
+            row=conn.execute('''SELECT count(*) n,coalesce(sum(size),0) b,
+                coalesce(sum(CASE WHEN status='verified' AND target=? THEN 1 ELSE 0 END),0) v,
+                coalesce(sum(CASE WHEN status='verified' AND target=? THEN size ELSE 0 END),0) vb
+                FROM files WHERE share=? AND seen=?''',(target,target,key,seen)).fetchone()
+            result[key]=dict(row,errors=conn.execute(
+                "SELECT count(*) FROM issues WHERE share=? AND phase='scan'",(key,)).fetchone()[0],
+                target=target,source=entry['source'],label=entry.get('label',key),
+                scan_complete=meta.get(f'task:{key}:scan_complete',meta.get('scan_complete'))=='1',
+                audit_ok=meta.get(f'task:{key}:audit_ok')=='1',
+                scan_time=meta.get(f'task:{key}:scan_time',''),
+                excluded=int(meta.get(f'task:{key}:excluded') or 0))
+        return result
+    finally:
+        conn.close()
+
+
 def load_page(database, config, keys, state='pending', search='', page=1, page_size=200, cancelled=None, mode='backup'):
     path = Path(database)
     keys = [key for key in keys if key in config['shares']]

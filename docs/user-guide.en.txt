@@ -53,3 +53,7 @@ transfer workers: 1–8 (default 1). Try 2–4 for small files, 1 for busy HDDs.
 limit uses one worker. Source and local SHA-256 validation and resumable state remain.
 Overall progress aggregates active files; the file bar shows the most recently updated
 file. Full audit remains serial. Older task and partial-file formats are compatible.
+
+Startup: From 2.4, the portable folder includes the EXE and _internal runtime. Keep them
+together; no installation is required. The UI shows before saved history loads in the
+background. Preserve data on upgrade and move the whole folder when relocating the app.

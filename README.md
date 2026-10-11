@@ -38,7 +38,9 @@ Configuration and state live beside the executable in `data/`; reports live in `
 Keep `data/` when upgrading. No services or installation entries are registered.
 If FolderFlow is already open, launching it again shows a message instead of starting a second instance.
 Close the existing window before switching to a newer executable in the same folder.
-The single-file bundle temporarily extracts runtime files into the system temp folder during startup.
+The portable folder includes `FolderFlow.exe` and its `_internal/` runtime. Keep them together;
+do not move the EXE alone. This layout starts directly without extracting runtime files on each launch.
+The UI appears before saved task totals and file inventory finish loading in the background.
 
 The `Language / 语言` selector offers System, English and Simplified Chinese. System mode uses
 the Windows UI language: Chinese selects Simplified Chinese; all other languages select English.
@@ -56,11 +58,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
 
 This creates a local `.venv`, installs pinned build dependencies, runs the tests and produces:
 
-- `dist/FolderFlow/FolderFlow.exe`
-- `dist/FolderFlow-2.3.1-windows-x64-portable.zip`
+- `dist/FolderFlow/FolderFlow.exe` and `dist/FolderFlow/_internal/`
+- `dist/FolderFlow-2.4.0-windows-x64-portable.zip`
 - `dist/SHA256SUMS.txt`
 
-The release is built from an explicit allowlist in a fresh staging directory.
+The release is built from documented public files and the generated `_internal/` runtime tree in a fresh staging directory.
 Local configuration, manifests, logs and backup data are never included.
 Application runtime dependencies are standard-library only. PyInstaller is a build dependency.
 

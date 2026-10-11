@@ -32,9 +32,9 @@ git push -u origin main
 5. 将 ZIP 和 `SHA256SUMS.txt` 作为 Release 附件上传。
 
 ```powershell
-git tag v2.3.1
-git push origin v2.3.1
-gh release create v2.3.1 .\dist\FolderFlow-2.3.1-windows-x64-portable.zip .\dist\SHA256SUMS.txt --title "FolderFlow 2.3.1" --notes-file .\docs\release-notes-v2.3.1.md
+git tag v2.4.0
+git push origin v2.4.0
+gh release create v2.4.0 .\dist\FolderFlow-2.4.0-windows-x64-portable.zip .\dist\SHA256SUMS.txt --title "FolderFlow 2.4.0" --notes-file .\docs\release-notes-v2.4.0.md
 ```
 
 CI 在 push、pull request 和手动触发时测试并构建可下载 artifacts，权限仅为读取源码，

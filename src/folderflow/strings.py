@@ -1,5 +1,7 @@
 """English display catalogue; original Chinese messages are stable keys."""
 EN = {'性能与重试':'Performance & retries',
+ '正在后台加载历史任务和清单…':'Loading saved tasks and inventory in the background…',
+ '历史记录读取失败，请查看操作日志。':'Could not read saved history. See the activity log.',
  '无法读写软件的数据目录：\n{p0}\n\n{p1}':'Cannot read or write the application data directory:\n{p0}\n\n{p1}',
  '扫描并发':'Scan workers',
  '传输并发':'Transfer workers',

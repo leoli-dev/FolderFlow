@@ -1,5 +1,20 @@
 # Performance and concurrency
 
+## Startup (2.4 and later)
+
+The default release is a portable folder bundle containing `FolderFlow.exe` and
+`_internal/`. It loads its runtime in place and avoids single-file extraction on each
+launch. Keep the whole folder together; installation is still unnecessary.
+
+The UI is built before task statistics are loaded. Saved totals and file inventory
+use background read-only SQLite queries, so a large manifest does not block the first
+frame. A loading message remains until historical task totals are available. These
+queries do not scan source folders or start backup jobs.
+
+Older single-file builds extract runtime files before application code can run.
+Startup measurements can also vary with OS caches, storage and security scanning.
+See [PyInstaller's bundle behavior](https://pyinstaller.org/en/stable/operating-mode.html).
+
 FolderFlow 2.3 uses threads for directory enumeration, destination metadata checks,
 and optional concurrent file transfers. Waiting for SMB and disk I/O does not need
 separate Python processes. Transfer workers read/copy/hash isolated partial files;

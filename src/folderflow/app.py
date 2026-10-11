@@ -15,7 +15,7 @@ from tkinter import ttk, filedialog, messagebox
 
 from .engine import Engine, Stopped, is_link, safe_path
 from . import __version__
-from .inventory import load_page
+from .inventory import load_page,load_summary
 from .i18n import LANGUAGE_CHOICES,Translator,resolve_language
 from .instance import AlreadyRunning,acquire_instance_lock
 
@@ -107,6 +107,10 @@ class App:
         self.query_applied = -1
         self.query_pending = None
         self.query_thread = None
+        self.summary_generation = 0
+        self.summary_pending = None
+        self.summary_thread = None
+        self.history_loading = True
         self.view_closing = False
         self.file_page = 1
         self.file_pages = 1
@@ -124,6 +128,7 @@ class App:
         root.protocol('WM_DELETE_WINDOW', self.close)
         self.style()
         self.build()
+        self.status.set(self.t('正在后台加载历史任务和清单…'))
         self.refresh_saved()
         self.save_config()
         self.request_inventory()
@@ -390,11 +395,33 @@ class App:
         self.tasks_toggle.configure(text=self.t('收起任务列表') if self.tasks_expanded else self.t('展开任务列表'))
 
     def refresh_saved(self):
-        engine = Engine(STATE, self.config)
-        try:
-            self.update_summary(engine.summary())
-        finally:
-            engine.close()
+        if self.view_closing:
+            return
+        self.summary_generation += 1
+        self.summary_pending=(self.summary_generation,STATE/'manifest.sqlite',
+            json.loads(json.dumps(self.config)))
+        self.start_summary_worker()
+
+    def start_summary_worker(self):
+        if not self.summary_pending or self.view_closing or (self.summary_thread and self.summary_thread.is_alive()):
+            return
+        def query():
+            while not self.view_closing:
+                job=self.summary_pending
+                self.summary_pending=None
+                if not job:
+                    break
+                generation,database,config=job
+                try:
+                    values=load_summary(database,config,
+                        cancelled=lambda:self.view_closing or generation!=self.summary_generation)
+                    if generation==self.summary_generation and not self.view_closing:
+                        self.events.put(('saved_summary',(generation,values)))
+                except Exception as error:
+                    if generation==self.summary_generation and not self.view_closing:
+                        self.events.put(('saved_summary_error',(generation,str(error))))
+        self.summary_thread=threading.Thread(target=query,daemon=True)
+        self.summary_thread.start()
 
     def update_summary(self, values):
         self.latest.update(values)
@@ -473,6 +500,10 @@ class App:
                 self.poll_id = None
             self.query_generation += 1
             self.query_pending = None
+            self.summary_generation += 1
+            self.summary_pending = None
+            if self.summary_thread and self.summary_thread.is_alive():
+                self.summary_thread.join(timeout=2)
             if self.query_thread and self.query_thread.is_alive():
                 self.query_thread.join(timeout=2)
 
@@ -753,6 +784,10 @@ class App:
                 messagebox.showinfo(self.t('选择目标'), self.t('请编辑这些任务并选择目标：\n')+'、'.join(missing))
                 return
         self.active_ids = keys
+        # A stale startup read must not overwrite an executing task's summary.
+        self.summary_generation += 1
+        self.summary_pending = None
+        self.history_loading = False
         self.operation = operation
         self.last_overall = None
         self.overall_active = False
@@ -847,6 +882,20 @@ class App:
                     self.add_log(value)
                 elif kind == 'summary':
                     self.update_summary(value)
+                elif kind == 'saved_summary':
+                    generation,values=value
+                    if generation==self.summary_generation and not self.busy:
+                        self.update_summary(values)
+                        if self.history_loading:
+                            self.history_loading=False
+                            self.status.set(self.t('就绪 · 选择任务，点击分析。'))
+                elif kind == 'saved_summary_error':
+                    generation,error=value
+                    if generation==self.summary_generation and not self.busy:
+                        self.add_log(error)
+                        if self.history_loading:
+                            self.history_loading=False
+                            self.status.set(self.t('历史记录读取失败，请查看操作日志。'))
                 elif kind == 'capacity':
                     self.show_plan(value)
                     self.request_inventory(reset=True)
@@ -930,6 +979,7 @@ class App:
         if self.busy and not reading and time.monotonic()-self.last_view_refresh >= 2:
             self.request_inventory()
         self.start_query_worker()
+        self.start_summary_worker()
         self.poll_id = self.root.after(120,self.poll)
 
     def open_target(self):

@@ -8,7 +8,7 @@ from folderflow import __version__
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = {
-    'build/binary/FolderFlow.exe': 'FolderFlow.exe',
+    'build/binary/FolderFlow/FolderFlow.exe': 'FolderFlow.exe',
     'README.md': 'README.md',
     'README_CN.md': 'README_CN.md',
     'CONTRIBUTING.md': 'CONTRIBUTING.md',
@@ -36,11 +36,35 @@ FILES = {
 }
 
 
+def release_files(root):
+    """Only documented public files plus PyInstaller's generated runtime tree."""
+    root=Path(root)
+    runtime=root/'build/binary/FolderFlow/_internal'
+    if not runtime.is_dir():
+        raise ValueError('Missing onedir runtime: '+str(runtime))
+    files=dict(FILES)
+    for path in sorted(runtime.rglob('*')):
+        if any(p.is_symlink() or p.is_junction() for p in [path,*path.parents]):
+            raise ValueError('Linked release runtime: '+str(path))
+        if not path.is_file():
+            continue
+        relative=path.relative_to(runtime)
+        if any(p in ('data','reports','.folderflow','_control') for p in relative.parts) or \
+                path.suffix.lower() in ('.sqlite','.db','.log','.part','.env','.pfx','.p12') or \
+                path.name.lower().startswith('.env'):
+            raise ValueError('Private file in runtime tree: '+str(relative))
+        files[path.relative_to(root).as_posix()]='_internal/'+relative.as_posix()
+    if len(files)==len(FILES):
+        raise ValueError('Empty onedir runtime')
+    return files
+
+
 def package(root=ROOT):
     root = Path(root).resolve()
+    files=release_files(root)
     stage = root/'build'/('release-stage-'+uuid.uuid4().hex)/'FolderFlow'
     stage.mkdir(parents=True)
-    for source, relative in FILES.items():
+    for source, relative in files.items():
         source_path = root/source
         if any(p.is_symlink() or p.is_junction() for p in [source_path, *source_path.parents]) or not source_path.is_file():
             raise ValueError('Missing or linked release input: '+source)
@@ -50,14 +74,14 @@ def package(root=ROOT):
     portable = root/'dist'/'FolderFlow'
     portable.mkdir(parents=True, exist_ok=True)
     # Replace only allowlisted application files. Existing local data/reports stay local.
-    for relative in FILES.values():
+    for relative in files.values():
         dest = portable/relative
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(stage/relative, dest)
     filename = f'FolderFlow-{__version__}-windows-x64-portable.zip'
     archive = root/'dist'/filename
     with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
-        for relative in FILES.values():
+        for relative in files.values():
             z.write(stage/relative,'FolderFlow/'+relative)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     (root/'dist'/'SHA256SUMS.txt').write_text(f'{digest}  {filename}\n',encoding='utf-8')

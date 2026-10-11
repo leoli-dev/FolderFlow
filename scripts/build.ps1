@@ -38,7 +38,7 @@ try {
     New-Item -ItemType Directory -Path $buildRoot, $distRoot -Force | Out-Null
     Invoke-Checked $venvPython @((Join-Path $PSScriptRoot "write_version_info.py"), (Join-Path $buildRoot "windows-version.txt"))
     Invoke-Checked $venvPython @(
-        "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
+        "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir", "--contents-directory", "_internal", "--windowed",
         "--name", "FolderFlow", "--paths", (Join-Path $repoRoot "src"),
         "--distpath", (Join-Path $buildRoot "binary"),
         "--workpath", (Join-Path $buildRoot "pyinstaller"),

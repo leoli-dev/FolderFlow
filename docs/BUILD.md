@@ -41,7 +41,7 @@ python -m venv .venv
 $env:PYTHONPATH = (Resolve-Path .\src).Path
 & .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 & .\.venv\Scripts\python.exe .\scripts\write_version_info.py .\build\windows-version.txt
-& .\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --windowed --name FolderFlow --paths src --distpath build/binary --workpath build/pyinstaller --specpath build --manifest packaging/windows.manifest --version-file build/windows-version.txt src/launcher.py
+& .\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --onedir --contents-directory _internal --windowed --name FolderFlow --paths src --distpath build/binary --workpath build/pyinstaller --specpath build --manifest packaging/windows.manifest --version-file build/windows-version.txt src/launcher.py
 & .\.venv\Scripts\python.exe .\scripts\package_release.py
 ```
 
@@ -50,12 +50,13 @@ $env:PYTHONPATH = (Resolve-Path .\src).Path
 ## 输出与绿色行为
 
 - `dist/FolderFlow/`：可直接运行的软件目录。
-- `dist/FolderFlow-2.3.1-windows-x64-portable.zip`：干净、可公开分发的压缩包。
+- `dist/FolderFlow-2.4.0-windows-x64-portable.zip`：干净、可公开分发的压缩包。
 - `dist/SHA256SUMS.txt`：ZIP 的 SHA-256 校验值。
 
 成品 EXE 包含 Python/Tk，不要求最终用户安装依赖，不需要管理员权限。
 Windows manifest 使用 `asInvoker`，启用长路径支持；构建包含版本号和产品信息。
-程序状态只保存在其旁边的 `data/`、`reports/`，启动过程中有单文件运行库的临时解压。
+程序状态只保存在其旁边的 `data/`、`reports/`。采用文件夹绿色包，运行库位于 `_internal/`，
+启动时不需要临时解包。请一起分发整个 FolderFlow 目录，不要单独移动 EXE。
 
 ZIP 只包含 `scripts/package_release.py` 中列出的应用、说明和许可证。
 即使你运行过 `dist/FolderFlow/FolderFlow.exe` 并生成个人状态，重新打包也不会把它们加入 ZIP。

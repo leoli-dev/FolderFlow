@@ -36,14 +36,15 @@ FolderFlow 将常用的“来源 → 目标”保存为任务，先分析文件�
 
 ## 绿色版怎么用
 
-1. 解压 `FolderFlow-2.3.1-windows-x64-portable.zip` 到一个有写权限的目录。
+1. 解压 `FolderFlow-2.4.0-windows-x64-portable.zip` 到一个有写权限的目录。
 2. 双击 `FolderFlow/FolderFlow.exe`。
 3. 点击 **新建任务**，选择来源、目标与模式。
 4. 选中任务，点击 **分析 / 扫描**，检查变化与空间需求。
 5. 点击 **执行 / 继续**；重要备份完成后运行 **完整校验**。
 
 程序不注册服务或安装项。任务和日志保存在程序旁的 `data/`，报告在 `reports/`。
-PyInstaller 单文件启动时会将运行库临时解压到系统临时目录；正常退出后会清理该临时目录。
+绿色包包含 `FolderFlow.exe` 和 `_internal/` 运行库目录，移动时须保留整个软件目录，不能单独移动 EXE。
+启动时直接加载附带运行库，省去每次临时解包；界面先显示，历史任务统计与清单在后台加载。
 升级时保留 `data/`，替换程序和附带文档。若移动软件，请移动整个软件目录。
 软件已打开时，再次双击会提示已有实例。切换新版之前，请关闭同一目录中的旧版窗口。
 卸载时删除软件目录即可；目标中的备份与历史版本由你自行保留。
@@ -105,12 +106,12 @@ dist/
     LICENSE
     third_party/
     ...
-  FolderFlow-2.3.1-windows-x64-portable.zip
+  FolderFlow-2.4.0-windows-x64-portable.zip
   SHA256SUMS.txt
 ```
 
-构建采用 `--onefile --windowed`，包含 Python、Tk 和所需运行库，无控制台窗口、无安装器。
-发布 ZIP 从新建暂存目录按白名单生成，**不会收集本机 `data/`、`reports/` 或备份内容**。
+构建采用 `--onedir --contents-directory _internal --windowed`，包含 Python、Tk 和所需运行库，无控制台窗口、无安装器。
+发布 ZIP 从新建暂存目录按公共文件白名单和构建生成的运行库目录生成，**不会收集本机 `data/`、`reports/` 或备份内容**。
 更多手动命令和常见问题见 [BUILD.md](docs/BUILD.md)。
 
 ## 测试
