@@ -17,6 +17,7 @@ from .engine import Engine, Stopped, is_link, safe_path
 from . import __version__
 from .inventory import load_page
 from .i18n import LANGUAGE_CHOICES,Translator,resolve_language
+from .instance import AlreadyRunning,acquire_instance_lock
 
 BASE = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[2]
 STATE = BASE / 'data'
@@ -954,28 +955,27 @@ class App:
 
 
 def main():
-    STATE.mkdir(parents=True,exist_ok=True)
-    lock = open(STATE/'application.lock','a+b')
-    import msvcrt
-    lock.seek(0)
-    if not lock.read(1):
-        lock.write(b'0')
-        lock.flush()
-    lock.seek(0)
     try:
-        msvcrt.locking(lock.fileno(),msvcrt.LK_NBLCK,1)
-    except OSError:
+        STATE.mkdir(parents=True,exist_ok=True)
+        lock = acquire_instance_lock(STATE/'application.lock')
+    except AlreadyRunning:
         language=resolve_language(load_config().get('language','auto'))
         ctypes.windll.user32.MessageBoxW(None,Translator(language).text('FolderFlow 已在运行，请使用已有窗口。'),'FolderFlow',0)
         return
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:
-        pass
-    root = tk.Tk()
-    App(root)
-    root.mainloop()
-    lock.close()
+    except OSError as error:
+        language=resolve_language()
+        text=Translator(language).text('无法读写软件的数据目录：\n{p0}\n\n{p1}',p0=STATE,p1=error)
+        ctypes.windll.user32.MessageBoxW(None,text,'FolderFlow',0x10)
+        return
+    # Closing the handle releases the lock even if GUI initialization fails.
+    with lock:
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            pass
+        root = tk.Tk()
+        App(root)
+        root.mainloop()
 
 
 if __name__ == '__main__':

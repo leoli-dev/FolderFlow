@@ -1,5 +1,6 @@
 """English display catalogue; original Chinese messages are stable keys."""
 EN = {'性能与重试':'Performance & retries',
+ '无法读写软件的数据目录：\n{p0}\n\n{p1}':'Cannot read or write the application data directory:\n{p0}\n\n{p1}',
  '扫描并发':'Scan workers',
  '传输并发':'Transfer workers',
  '传输建议先试 2–4；机械盘可用 1。设置复制限速时使用单并发。':'Try 2–4 transfer workers first; use 1 for busy HDDs. A copy rate limit uses one worker.',

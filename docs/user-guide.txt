@@ -1,4 +1,4 @@
-FolderFlow 2.3.0 — Windows 文件备份与同步
+FolderFlow 2.3.1 — Windows 文件备份与同步
 2026-10-08
 
 开始使用

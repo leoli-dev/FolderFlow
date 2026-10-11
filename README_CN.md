@@ -36,7 +36,7 @@ FolderFlow 将常用的“来源 → 目标”保存为任务，先分析文件�
 
 ## 绿色版怎么用
 
-1. 解压 `FolderFlow-2.3.0-windows-x64-portable.zip` 到一个有写权限的目录。
+1. 解压 `FolderFlow-2.3.1-windows-x64-portable.zip` 到一个有写权限的目录。
 2. 双击 `FolderFlow/FolderFlow.exe`。
 3. 点击 **新建任务**，选择来源、目标与模式。
 4. 选中任务，点击 **分析 / 扫描**，检查变化与空间需求。
@@ -45,6 +45,7 @@ FolderFlow 将常用的“来源 → 目标”保存为任务，先分析文件�
 程序不注册服务或安装项。任务和日志保存在程序旁的 `data/`，报告在 `reports/`。
 PyInstaller 单文件启动时会将运行库临时解压到系统临时目录；正常退出后会清理该临时目录。
 升级时保留 `data/`，替换程序和附带文档。若移动软件，请移动整个软件目录。
+软件已打开时，再次双击会提示已有实例。切换新版之前，请关闭同一目录中的旧版窗口。
 卸载时删除软件目录即可；目标中的备份与历史版本由你自行保留。
 
 新任务的副本直接写到目标目录；`.folderflow/任务ID/` 保存续传文件、版本和回收内容。
@@ -104,7 +105,7 @@ dist/
     LICENSE
     third_party/
     ...
-  FolderFlow-2.3.0-windows-x64-portable.zip
+  FolderFlow-2.3.1-windows-x64-portable.zip
   SHA256SUMS.txt
 ```
 

@@ -36,6 +36,8 @@ There is no bidirectional merge, background scheduler, system imaging or applica
 
 Configuration and state live beside the executable in `data/`; reports live in `reports/`.
 Keep `data/` when upgrading. No services or installation entries are registered.
+If FolderFlow is already open, launching it again shows a message instead of starting a second instance.
+Close the existing window before switching to a newer executable in the same folder.
 The single-file bundle temporarily extracts runtime files into the system temp folder during startup.
 
 The `Language / 语言` selector offers System, English and Simplified Chinese. System mode uses
@@ -55,7 +57,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
 This creates a local `.venv`, installs pinned build dependencies, runs the tests and produces:
 
 - `dist/FolderFlow/FolderFlow.exe`
-- `dist/FolderFlow-2.3.0-windows-x64-portable.zip`
+- `dist/FolderFlow-2.3.1-windows-x64-portable.zip`
 - `dist/SHA256SUMS.txt`
 
 The release is built from an explicit allowlist in a fresh staging directory.
